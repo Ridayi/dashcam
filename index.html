@@ -1,0 +1,1449 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>隨行錄</title>
+<meta name="description" content="把舊 iPhone 變成循環錄影的行車紀錄器">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="隨行錄">
+<meta name="theme-color" content="#0A0E13">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<style>
+:root{
+  /* 版面：相機畫面滿版；上方儀表列；橫放時右側控制列、直放時底部控制列 */
+  --ground:#0A0E13;
+  --panel:#111821;
+  --raise:#1B2430;
+  --line:#2A3542;
+  --ink:#E9EEF3;
+  --dim:#8B98A7;
+  --amber:#F2A33A;
+  --rec:#FF453A;
+  --ok:#4CD59A;
+  --ui:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;
+  --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --rail:92px;
+  --bar:96px;
+  --sl:env(safe-area-inset-left,0px);
+  --sr:env(safe-area-inset-right,0px);
+  --st:env(safe-area-inset-top,0px);
+  --sb:env(safe-area-inset-bottom,0px);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--ground);color:var(--ink);font:15px/1.45 var(--ui);-webkit-text-size-adjust:100%;overflow:hidden;overscroll-behavior:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;touch-action:manipulation}
+button:disabled{opacity:.45;cursor:default}
+a{color:inherit}
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+[hidden]{display:none!important}
+svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.num{font-variant-numeric:tabular-nums}
+
+/* 相機畫面 */
+#stage{position:fixed;inset:0;background:#000;overflow:hidden}
+#cam,#out{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+#out{z-index:1}
+#stage.direct #out{visibility:hidden}
+
+/* 儀表列 */
+#hud{position:fixed;z-index:5;top:0;left:0;right:0;display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:calc(8px + var(--st)) max(14px,calc(var(--sr) + 10px)) 22px max(14px,calc(var(--sl) + 10px));background:linear-gradient(rgba(6,9,13,.8),rgba(6,9,13,0));pointer-events:none}
+.hud-l,.hud-r{display:flex;flex-direction:column;gap:5px;min-width:0}
+.hud-r{align-items:flex-end}
+.pill{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 11px;border-radius:14px;background:rgba(27,36,48,.85);font-weight:600;font-size:13px;letter-spacing:.04em;white-space:nowrap;align-self:flex-start}
+.pill .dot{width:9px;height:9px;border-radius:50%;background:var(--dim)}
+.pill.rec{background:rgba(255,69,58,.2);color:#FFDCD9}
+.pill.rec .dot{background:var(--rec);animation:blink 1.2s steps(1) infinite}
+.pill.wait{background:rgba(242,163,58,.18);color:#FFE2B8}
+.pill.wait .dot{background:var(--amber)}
+@keyframes blink{50%{opacity:.2}}
+.hud-sub{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hud-sub .warn{color:var(--amber)}
+.hud-clock{font-size:15px;font-weight:600;color:var(--ink);padding-top:4px;white-space:nowrap}
+.speed{display:flex;align-items:baseline;gap:4px;line-height:1}
+.speed b{font-size:34px;font-weight:700;letter-spacing:-.01em}
+.speed small{font-size:12px;color:var(--dim)}
+.store{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);white-space:nowrap}
+.store i{display:block;width:56px;height:4px;border-radius:2px;background:rgba(255,255,255,.14);overflow:hidden}
+.store i b{display:block;height:100%;width:0;background:var(--ink);border-radius:2px}
+.store.full i b{background:var(--amber)}
+
+/* 控制列 */
+#controls{position:fixed;z-index:6;display:flex;align-items:center;justify-content:space-evenly;background:var(--panel)}
+.ctl{width:62px;height:58px;border-radius:14px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px;letter-spacing:.06em}
+.ctl span{color:var(--dim)}
+.ctl:active{background:var(--raise)}
+#b-lock{color:var(--amber)}
+#b-lock.flash{background:rgba(242,163,58,.22)}
+.recbtn{width:72px;height:72px;border-radius:50%;border:4px solid var(--ink);display:grid;place-items:center;flex:none}
+.recbtn i{display:block;width:52px;height:52px;border-radius:50%;background:var(--rec);transition:width .2s,height .2s,border-radius .2s}
+.recbtn.on i{width:28px;height:28px;border-radius:7px}
+.recbtn.armed{border-color:var(--amber)}
+
+@media (orientation:landscape){
+  #stage,#idle{right:calc(var(--rail) + var(--sr))}
+  #hud{right:calc(var(--rail) + var(--sr));padding-right:14px}
+  #controls{top:0;bottom:0;right:0;width:calc(var(--rail) + var(--sr));flex-direction:column;padding:calc(10px + var(--st)) var(--sr) calc(10px + var(--sb)) 0;border-left:1px solid var(--line)}
+}
+@media (orientation:landscape) and (max-height:380px){
+  .ctl{height:46px;width:58px}
+  .ctl span{display:none}
+  .recbtn{width:60px;height:60px}
+  .recbtn i{width:42px;height:42px}
+  .recbtn.on i{width:24px;height:24px}
+}
+@media (orientation:portrait){
+  #stage,#idle{bottom:calc(var(--bar) + var(--sb))}
+  #controls{left:0;right:0;bottom:0;height:calc(var(--bar) + var(--sb));padding:0 max(10px,var(--sr)) var(--sb) max(10px,var(--sl));border-top:1px solid var(--line)}
+}
+
+/* 待機說明 */
+#idle{position:fixed;z-index:4;inset:0;overflow:auto;-webkit-overflow-scrolling:touch;display:flex;padding:calc(64px + var(--st)) max(16px,var(--sr)) 20px max(16px,var(--sl));-webkit-user-select:text;user-select:text}
+.card{margin:auto;width:100%;max-width:520px;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:20px 20px 16px;display:flex;flex-direction:column;gap:14px}
+.card h1{margin:0;font-size:26px;line-height:1.2;letter-spacing:.04em}
+.card .lead{margin:0;color:var(--dim)}
+.err{white-space:pre-line;background:rgba(255,69,58,.12);border:1px solid rgba(255,69,58,.45);color:#FFCFCA;padding:10px 12px;border-radius:10px;font-size:14px}
+.check{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.check li{display:grid;grid-template-columns:14px 1fr;column-gap:10px}
+.check li::before{content:"";grid-row:span 2;width:8px;height:8px;border-radius:50%;background:var(--dim);margin-top:8px}
+.check li.ok::before{background:var(--ok)}
+.check li.warn::before{background:var(--amber)}
+.check b{font-weight:600}
+.check span{color:var(--dim);font-size:13px}
+.stats{margin:0;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)}
+
+/* 全螢幕面板 */
+.sheet{position:fixed;inset:0;z-index:20;background:var(--ground);display:flex;flex-direction:column;transform:translateY(100%);visibility:hidden;transition:transform .25s ease,visibility 0s linear .25s}
+.sheet.open{transform:none;visibility:visible;transition:transform .25s ease}
+.sheet>header,#player>header{display:flex;align-items:center;gap:12px;padding:calc(8px + var(--st)) max(12px,var(--sr)) 8px max(16px,var(--sl));border-bottom:1px solid var(--line);background:var(--panel)}
+.sheet h2{margin:0;font-size:17px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sheet h2 small{font-size:13px;font-weight:400;color:var(--dim);margin-left:6px}
+.x{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;flex:none}
+.x:active{background:var(--raise)}
+.body{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:12px max(16px,var(--sr)) calc(28px + var(--sb)) max(16px,var(--sl))}
+.body>*{max-width:720px;margin-left:auto;margin-right:auto}
+
+/* 片段清單 */
+.list{display:flex;flex-direction:column;gap:8px}
+.day{margin-top:10px;font-size:12px;letter-spacing:.08em;color:var(--dim)}
+.clip{display:grid;grid-template-columns:112px minmax(0,1fr) auto;gap:12px;align-items:center;padding:8px;border-radius:12px;background:var(--panel);cursor:pointer}
+.clip:active{background:var(--raise)}
+.th{width:112px;height:63px;border-radius:8px;background:var(--raise) center/cover no-repeat}
+.meta{display:flex;flex-direction:column;gap:2px;min-width:0}
+.meta .t{font-weight:600}
+.meta .m{font-size:13px;color:var(--dim)}
+.bds{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+.bd{font-size:11px;padding:1px 7px;border-radius:9px;background:var(--raise);color:var(--dim);white-space:nowrap}
+.bd.lock{background:rgba(242,163,58,.18);color:var(--amber)}
+.bd.rec{background:rgba(255,69,58,.18);color:#FF9F99}
+.lk{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;color:var(--dim)}
+.lk.on{color:var(--amber)}
+.empty{padding:40px 8px;text-align:center;color:var(--dim)}
+
+/* 分段選擇、開關 */
+.seg{display:flex;background:var(--raise);border-radius:10px;padding:3px;gap:3px}
+.seg label{flex:1;position:relative;min-width:0}
+.seg input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.seg span{display:block;text-align:center;padding:8px 2px;border-radius:8px;font-size:14px;color:var(--dim);white-space:nowrap}
+.seg input:checked+span{background:var(--ink);color:var(--ground);font-weight:600}
+.seg input:focus-visible+span{outline:2px solid var(--amber)}
+.seg.mini span{padding:5px 10px;font-size:13px}
+.group{margin-top:22px;margin-bottom:8px;font-size:12px;letter-spacing:.1em;color:var(--dim)}
+.rows{display:flex;flex-direction:column;gap:8px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 14px;background:var(--panel);border-radius:12px}
+.row.stack{flex-direction:column;align-items:stretch;gap:10px}
+.row.off{opacity:.45;pointer-events:none}
+.lb{min-width:0}
+.lb b{display:block;font-weight:600}
+.lb small{display:block;color:var(--dim);font-size:12.5px;margin-top:2px}
+.sw{-webkit-appearance:none;appearance:none;width:51px;height:31px;border-radius:16px;background:var(--line);position:relative;flex:none;margin:0;cursor:pointer;transition:background .2s}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;transition:transform .2s}
+.sw:checked{background:var(--ok)}
+.sw:checked::after{transform:translateX(20px)}
+.info{margin-top:4px;margin-bottom:0;padding:12px 14px;border-radius:12px;background:var(--panel);font-size:13px;color:var(--dim);line-height:1.6}
+.info b{color:var(--ink);font-weight:600}
+.foot{margin-top:22px;font-size:12.5px;color:var(--dim);line-height:1.6}
+
+.btn{height:46px;padding:0 16px;border-radius:12px;background:var(--raise);display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:600;text-decoration:none;white-space:nowrap;flex:none}
+.btn:active{filter:brightness(1.2)}
+.btn.primary{background:var(--amber);color:#1C1305}
+.btn.danger{color:#FF8E85}
+.btn.danger.armed{background:var(--rec);color:#fff}
+.btn.on{color:var(--amber)}
+
+/* 播放器 */
+#player{position:fixed;inset:0;z-index:25;background:#000;display:flex;flex-direction:column}
+.p-h{flex:1;min-width:0;display:flex;flex-direction:column}
+.p-h small{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#p-video{flex:1;min-height:0;width:100%;background:#000}
+.acts{display:flex;flex-wrap:wrap;gap:8px;padding:10px max(16px,var(--sr)) calc(10px + var(--sb)) max(16px,var(--sl));background:var(--panel);border-top:1px solid var(--line)}
+
+/* 熄屏 */
+#dim{position:fixed;inset:0;z-index:30;background:#000;cursor:pointer}
+#dim-t{position:absolute;font-size:13px;font-weight:600;color:#6B2420;letter-spacing:.06em;white-space:nowrap}
+#dim-t small{display:block;font-weight:400;color:#2C343E;letter-spacing:0}
+
+#toast{position:fixed;z-index:40;left:50%;top:calc(66px + var(--st));transform:translate(-50%,-8px);opacity:0;transition:opacity .2s,transform .2s;background:var(--raise);border:1px solid var(--line);padding:10px 16px;border-radius:12px;font-weight:600;font-size:14px;width:max-content;max-width:calc(100% - 32px);text-align:center;pointer-events:none}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+#toast.warn{border-color:var(--amber);color:#FFE2B8}
+#demo-tag{position:fixed;z-index:7;left:50%;transform:translateX(-50%);bottom:calc(var(--sb) + 104px);font-size:11px;letter-spacing:.1em;color:var(--amber);background:rgba(242,163,58,.12);padding:2px 8px;border-radius:8px;pointer-events:none}
+
+@media (prefers-reduced-motion:reduce){
+  .pill.rec .dot{animation:none}
+  .sheet,.sheet.open,.recbtn i,#toast{transition:none}
+}
+</style>
+</head>
+<body>
+
+<main id="stage" class="direct">
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="out" width="1280" height="720"></canvas>
+</main>
+
+<header id="hud">
+  <div class="hud-l">
+    <div id="pill" class="pill"><i class="dot"></i><span id="pill-t">待機</span></div>
+    <div id="sub" class="hud-sub num"></div>
+  </div>
+  <div id="clock" class="hud-clock num">--:--:--</div>
+  <div class="hud-r">
+    <div id="speed" class="speed num" hidden><b id="kmh">--</b><small>km/h</small></div>
+    <div id="store" class="store num"><span id="store-t">0 MB</span><i><b id="store-bar"></b></i></div>
+  </div>
+</header>
+
+<section id="idle">
+  <div class="card">
+    <h1>隨行錄</h1>
+    <p class="lead">循環錄影的行車紀錄器。按紅色按鈕開始錄，空間滿了會自動覆蓋最舊、沒鎖定的片段。</p>
+    <div id="err" class="err" hidden></div>
+    <ul class="check">
+      <li id="ck-wake"><b>自動鎖定設為「永不」</b><span id="ck-wake-t">設定 › 螢幕顯示與亮度 › 自動鎖定。螢幕一鎖，網頁就停止錄影。</span></li>
+      <li><b>接上車充，避開陽光直射</b><span>iPhone 過熱時會自動關閉相機。</span></li>
+      <li><b>橫放固定，關閉「直向鎖定」</b><span>從控制中心關掉直向鎖定，畫面才會跟著轉成橫的。</span></li>
+      <li id="ck-home"><b>加入主畫面</b><span id="ck-home-t">Safari 分享按鈕 › 加入主畫面，之後從主畫面圖示全螢幕開啟。</span></li>
+    </ul>
+    <p id="idle-stats" class="stats num">還沒有錄過片段。</p>
+  </div>
+</section>
+
+<nav id="controls">
+  <button class="ctl" id="b-clips" aria-label="片段">
+    <svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9.5h18M8 5v4.5M13 5v4.5M18 5v4.5"/></svg><span>片段</span>
+  </button>
+  <button class="ctl" id="b-lock" aria-label="鎖定目前片段">
+    <svg class="i" viewBox="0 0 24 24"><path d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg><span>鎖定</span>
+  </button>
+  <button id="b-rec" class="recbtn" aria-label="開始錄影"><i></i></button>
+  <button class="ctl" id="b-dim" aria-label="熄屏">
+    <svg class="i" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/></svg><span>熄屏</span>
+  </button>
+  <button class="ctl" id="b-set" aria-label="設定">
+    <svg class="i" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>設定</span>
+  </button>
+</nav>
+
+<section id="sheet-clips" class="sheet" aria-label="片段">
+  <header>
+    <h2>片段<small id="clips-sum" class="num"></small></h2>
+    <div class="seg mini" role="radiogroup" aria-label="篩選">
+      <label><input type="radio" id="cf-all" name="cf" value="all" checked><span>全部</span></label>
+      <label><input type="radio" id="cf-lock" name="cf" value="locked"><span>已鎖定</span></label>
+    </div>
+    <button class="x" data-close aria-label="關閉"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </header>
+  <div class="body"><div id="clip-list" class="list"></div></div>
+</section>
+
+<section id="sheet-set" class="sheet" aria-label="設定">
+  <header>
+    <h2>設定</h2>
+    <button class="x" data-close aria-label="關閉"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </header>
+  <div class="body">
+    <p id="set-info" class="info num"></p>
+
+    <div class="group">錄影</div>
+    <div class="rows">
+      <div class="row stack">
+        <div class="lb"><b>片段長度</b><small>每段存成一個檔案，空間滿了先覆蓋最舊的</small></div>
+        <div class="seg" role="radiogroup" aria-label="片段長度">
+          <label><input type="radio" id="o-seg1" name="segMin" value="1"><span>1 分鐘</span></label>
+          <label><input type="radio" id="o-seg3" name="segMin" value="3"><span>3 分鐘</span></label>
+          <label><input type="radio" id="o-seg5" name="segMin" value="5"><span>5 分鐘</span></label>
+        </div>
+      </div>
+      <div class="row stack">
+        <div class="lb"><b>畫質</b><small>畫質越高，能保留的時間越短，手機也越熱</small></div>
+        <div class="seg" role="radiogroup" aria-label="畫質">
+          <label><input type="radio" id="o-q-low" name="quality" value="low"><span>省空間 480p</span></label>
+          <label><input type="radio" id="o-q-std" name="quality" value="std"><span>標準 720p</span></label>
+          <label><input type="radio" id="o-q-high" name="quality" value="high"><span>高畫質 1080p</span></label>
+        </div>
+      </div>
+      <div class="row stack">
+        <div class="lb"><b>儲存上限</b><small>只計算這個 App 的影片；鎖定的片段不會被覆蓋</small></div>
+        <div class="seg" role="radiogroup" aria-label="儲存上限">
+          <label><input type="radio" id="o-cap-auto" name="capGB" value="auto"><span>自動</span></label>
+          <label><input type="radio" id="o-cap-1" name="capGB" value="1"><span>1 GB</span></label>
+          <label><input type="radio" id="o-cap-2" name="capGB" value="2"><span>2 GB</span></label>
+          <label><input type="radio" id="o-cap-4" name="capGB" value="4"><span>4 GB</span></label>
+          <label><input type="radio" id="o-cap-8" name="capGB" value="8"><span>8 GB</span></label>
+        </div>
+      </div>
+      <label class="row" for="o-overlay">
+        <div class="lb"><b>時間浮水印</b><small>把日期、時間（和車速）印在影片上。若錄出來全黑或卡頓，請關閉</small></div>
+        <input type="checkbox" class="sw" id="o-overlay" data-k="overlay">
+      </label>
+      <div class="row stack" id="row-rot">
+        <div class="lb"><b>畫面旋轉</b><small>手機擺放方向和畫面不一致時使用（需要開啟浮水印）</small></div>
+        <div class="seg" role="radiogroup" aria-label="畫面旋轉">
+          <label><input type="radio" id="o-rot0" name="rotate" value="0"><span>不轉</span></label>
+          <label><input type="radio" id="o-rot90" name="rotate" value="90"><span>右轉 90°</span></label>
+          <label><input type="radio" id="o-rot180" name="rotate" value="180"><span>180°</span></label>
+          <label><input type="radio" id="o-rot270" name="rotate" value="270"><span>左轉 90°</span></label>
+        </div>
+      </div>
+      <label class="row" for="o-audio">
+        <div class="lb"><b>收音</b><small>開啟後，手機正在播的音樂或導航語音可能會被中斷</small></div>
+        <input type="checkbox" class="sw" id="o-audio" data-k="audio">
+      </label>
+    </div>
+
+    <div class="group">感測</div>
+    <div class="rows">
+      <label class="row" for="o-gps">
+        <div class="lb"><b>GPS 車速</b><small>顯示並記錄車速與位置，比較耗電</small></div>
+        <input type="checkbox" class="sw" id="o-gps" data-k="gps">
+      </label>
+      <label class="row" for="o-gsensor">
+        <div class="lb"><b>撞擊自動鎖定</b><small>感測到劇烈晃動時，自動鎖定前後約 30 秒的片段</small></div>
+        <input type="checkbox" class="sw" id="o-gsensor" data-k="gsensor">
+      </label>
+      <div class="row stack" id="row-g">
+        <div class="lb"><b>撞擊靈敏度</b><small>路面顛簸常誤判時，改成「遲鈍」</small></div>
+        <div class="seg" role="radiogroup" aria-label="撞擊靈敏度">
+          <label><input type="radio" id="o-g15" name="gLevel" value="1.5"><span>靈敏 1.5G</span></label>
+          <label><input type="radio" id="o-g25" name="gLevel" value="2.5"><span>標準 2.5G</span></label>
+          <label><input type="radio" id="o-g4" name="gLevel" value="4"><span>遲鈍 4G</span></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">啟動</div>
+    <div class="rows">
+      <label class="row" for="o-autostart">
+        <div class="lb"><b>打開就開始錄影</b><small>上車打開 App 就自動錄，不用按按鈕</small></div>
+        <input type="checkbox" class="sw" id="o-autostart" data-k="autostart">
+      </label>
+    </div>
+
+    <div class="group">片段管理</div>
+    <div class="rows">
+      <div class="row">
+        <div class="lb"><b>刪除所有未鎖定片段</b><small>鎖定的片段和正在錄的這段會保留</small></div>
+        <button class="btn danger" id="b-wipe"><span class="lbl">刪除</span></button>
+      </div>
+    </div>
+
+    <p class="foot">隨行錄 v<span id="ver"></span>。影片只存在這支手機的瀏覽器裡，不會上傳到任何地方。從主畫面圖示開啟和從 Safari 開啟，存的片段是分開的，請固定用同一種方式開啟。</p>
+  </div>
+</section>
+
+<div id="player" hidden role="dialog" aria-label="播放片段">
+  <header>
+    <button class="x" id="p-close" aria-label="關閉"><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+    <div class="p-h"><b id="p-title"></b><small id="p-info" class="num"></small></div>
+  </header>
+  <video id="p-video" controls playsinline preload="metadata"></video>
+  <div class="acts">
+    <button class="btn primary" id="p-save" disabled><svg class="i" viewBox="0 0 24 24"><path d="M12 15V3M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg><span class="lbl">準備中…</span></button>
+    <button class="btn" id="p-lock"><span class="ic"></span><span class="lbl">鎖定</span></button>
+    <a class="btn" id="p-map" target="_blank" rel="noopener" hidden><svg class="i" viewBox="0 0 24 24"><path d="M12 21s7-6.2 7-11.5A7 7 0 005 9.5C5 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span>地圖位置</span></a>
+    <button class="btn danger" id="p-del"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg><span class="lbl">刪除</span></button>
+  </div>
+</div>
+
+<div id="dim" hidden><div id="dim-t" class="num"></div></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="demo-tag" hidden>示範模式：使用模擬畫面</div>
+
+<script>
+'use strict';
+const VERSION = '1.0.0';
+const qs = new URLSearchParams(location.search);
+const DEMO = qs.has('demo');
+const SEG_SEC = Math.max(0, Number(qs.get('seg')) || 0); // 測試用：片段秒數
+const MB = 1024 * 1024, GB = 1024 * MB;
+
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.prototype.slice.call((r || document).querySelectorAll(s));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const pad = n => String(n).padStart(2, '0');
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function lsDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+
+const ICON = {
+  lock: '<svg class="i" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>',
+  unlock: '<svg class="i" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 017.6-1.8"/></svg>',
+};
+
+// ---------- 設定 ----------
+const DEFAULTS = { segMin: 3, quality: 'std', capGB: 'auto', overlay: true, rotate: 0, audio: false, gps: false, gsensor: false, gLevel: 2.5, autostart: false };
+const QUALITY = {
+  low:  { long: 854,  bps: 1200000, label: '480p' },
+  std:  { long: 1280, bps: 2500000, label: '720p' },
+  high: { long: 1920, bps: 5000000, label: '1080p' },
+};
+const S = Object.assign({}, DEFAULTS, (() => { try { return JSON.parse(lsGet('dashcam.settings') || '{}'); } catch (e) { return {}; } })());
+if (!QUALITY[S.quality]) S.quality = 'std';
+function saveSettings() { lsSet('dashcam.settings', JSON.stringify(S)); }
+
+// ---------- 格式化 ----------
+function fmtTime(t) { const d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
+function fmtDur(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+  return (h ? h + ':' + pad(m) : m) + ':' + pad(s % 60);
+}
+function fmtBytes(b) {
+  if (b >= GB) return (b / GB).toFixed(1) + ' GB';
+  if (b >= 10 * MB) return Math.round(b / MB) + ' MB';
+  if (b >= MB) return (b / MB).toFixed(1) + ' MB';
+  return b ? Math.max(1, Math.round(b / 1024)) + ' KB' : '0 MB';
+}
+function dayLabel(t) {
+  const d = new Date(t), today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - today) / 86400000);
+  if (diff === 0) return '今天';
+  if (diff === -1) return '昨天';
+  return (d.getMonth() + 1) + '月' + d.getDate() + '日 週' + '日一二三四五六'[d.getDay()];
+}
+function fileStamp(t) { const d = new Date(t); return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()); }
+function segLabel() { return SEG_SEC ? SEG_SEC + ' 秒' : S.segMin + ' 分鐘'; }
+
+// ---------- IndexedDB：片段資料 + 每秒一塊的影片資料 ----------
+const DB = (() => {
+  let p = null;
+  function open() {
+    if (!p) p = new Promise((res, rej) => {
+      const r = indexedDB.open('dashcam', 1);
+      r.onupgradeneeded = () => {
+        const d = r.result;
+        if (!d.objectStoreNames.contains('segments')) d.createObjectStore('segments', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('chunks')) d.createObjectStore('chunks', { keyPath: ['seg', 'i'] });
+      };
+      r.onsuccess = () => { const d = r.result; d.onclose = () => { p = null; }; d.onversionchange = () => { d.close(); p = null; }; res(d); };
+      r.onerror = () => { p = null; rej(r.error); };
+    });
+    return p;
+  }
+  function attempt(names, mode, body) {
+    return open().then(d => new Promise((res, rej) => {
+      let t;
+      try { t = d.transaction(names, mode); } catch (e) { p = null; return rej(e); }
+      const out = {};
+      t.oncomplete = () => res(out.v);
+      t.onabort = () => rej(t.error || new Error('儲存失敗'));
+      body(t, out);
+    }));
+  }
+  // iOS 從背景回來時連線可能已失效，重開一次
+  function run(names, mode, body) {
+    return attempt(names, mode, body).catch(e => {
+      if (e && e.name === 'InvalidStateError') { p = null; return attempt(names, mode, body); }
+      throw e;
+    });
+  }
+  const range = id => IDBKeyRange.bound([id, 0], [id, Infinity]);
+  return {
+    allSegs: () => run(['segments'], 'readonly', (t, o) => { const r = t.objectStore('segments').getAll(); r.onsuccess = () => { o.v = r.result; }; }),
+    putSeg: seg => run(['segments'], 'readwrite', t => { t.objectStore('segments').put(seg); }),
+    putChunk: (seg, i, tm, blob) => run(['chunks'], 'readwrite', t => { t.objectStore('chunks').put({ seg: seg, i: i, t: tm, blob: blob }); }),
+    chunks: id => run(['chunks'], 'readonly', (t, o) => { const r = t.objectStore('chunks').getAll(range(id)); r.onsuccess = () => { o.v = r.result; }; }),
+    delSeg: id => run(['segments', 'chunks'], 'readwrite', t => { t.objectStore('segments').delete(id); t.objectStore('chunks').delete(range(id)); }),
+  };
+})();
+
+// ---------- 狀態 ----------
+const CAM = $('#cam'), OUT = $('#out'), STAGE = $('#stage');
+const ctx = OUT.getContext('2d', { alpha: false });
+const R = {
+  want: false,        // 使用者要錄影
+  cam: null,          // 相機 MediaStream
+  mr: null,           // 目前的 MediaRecorder
+  seg: null,          // 目前片段
+  track: null,        // 浮水印畫布的影像軌
+  segTimer: 0,
+  lastData: 0,
+  timesliceOK: false, // 瀏覽器有每秒交出資料
+  fails: 0,
+  lastAttempt: 0,
+  restartPending: false,
+  q: Promise.resolve(), // 寫入佇列（依序寫入）
+  writeErrs: 0,
+  warnedFull: false,
+};
+let segs = [];
+let lockUntil = 0, lastEvent = 0, lastId = 0, lastFrame = 0;
+let quotaBytes = 0;
+let envOK = true;
+
+function newId() { let t = Date.now(); if (t <= lastId) t = lastId + 1; lastId = t; return t; }
+function usedBytes() { return segs.reduce((a, s) => a + (s.bytes || 0), 0); }
+function capBytes() {
+  if (S.capGB !== 'auto') return Number(S.capGB) * GB;
+  if (quotaBytes) return Math.max(256 * MB, Math.min(quotaBytes * 0.8, 4 * GB));
+  return 1 * GB;
+}
+function isQuota(e) { return e && (e.name === 'QuotaExceededError' || e.code === 22); }
+
+// 依序執行相機/錄影器操作，避免互相打架
+let pipeQ = Promise.resolve(), pipeBusy = 0;
+function pipe(fn) {
+  pipeBusy++;
+  const p = pipeQ.then(fn).catch(e => console.error(e)).finally(() => { pipeBusy--; });
+  pipeQ = p;
+  return p;
+}
+function enqueue(fn) {
+  R.q = R.q.then(fn).then(() => { R.writeErrs = 0; }, onWriteError);
+  return R.q;
+}
+
+// ---------- 相機 ----------
+function waitFor(cond, ms) {
+  return new Promise((res, rej) => {
+    const t0 = Date.now();
+    (function tick() {
+      if (cond()) return res();
+      if (Date.now() - t0 > ms) return rej(Object.assign(new Error('相機沒有畫面'), { name: 'NoFrames' }));
+      setTimeout(tick, 50);
+    })();
+  });
+}
+
+function demoStream(long) {
+  const c = document.createElement('canvas');
+  c.width = long; c.height = Math.round(long * 9 / 16 / 2) * 2;
+  const x = c.getContext('2d'), W = c.width, H = c.height;
+  let f = 0;
+  function draw() {
+    f++;
+    const g = x.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#36526e'); g.addColorStop(0.5, '#9db1c2'); g.addColorStop(0.5, '#3a3e43'); g.addColorStop(1, '#222529');
+    x.fillStyle = g; x.fillRect(0, 0, W, H);
+    x.strokeStyle = '#d8d8d8'; x.lineWidth = W / 220;
+    x.beginPath(); x.moveTo(W * 0.47, H * 0.5); x.lineTo(W * 0.04, H); x.moveTo(W * 0.53, H * 0.5); x.lineTo(W * 0.96, H); x.stroke();
+    x.fillStyle = '#f0cf4a';
+    for (let k = 0; k < 7; k++) {
+      const p = (k / 7 + (f % 90) / 630) % 1, y = H * 0.5 + p * p * H * 0.5;
+      const w = 2 + p * W * 0.018;
+      x.fillRect(W / 2 - w / 2, y, w, 2 + p * H * 0.07);
+    }
+    x.fillStyle = 'rgba(255,255,255,.85)'; x.font = '600 ' + Math.round(H * 0.045) + 'px sans-serif';
+    x.fillText('DEMO  #' + f, W * 0.04, H * 0.09);
+  }
+  draw();
+  const id = setInterval(draw, 33);
+  const s = c.captureStream(30);
+  s._stopDemo = () => clearInterval(id);
+  return s;
+}
+
+function camAlive() { return !!(R.cam && R.cam.getVideoTracks().some(t => t.readyState === 'live')); }
+
+async function ensureCamera() {
+  if (camAlive()) return R.cam;
+  stopCamera();
+  const q = QUALITY[S.quality];
+  let stream;
+  if (DEMO) stream = demoStream(q.long);
+  else {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw Object.assign(new Error('這個瀏覽器不能使用相機'), { name: 'NoCamera' });
+    const video = { facingMode: { ideal: 'environment' }, width: { ideal: q.long }, height: { ideal: Math.round(q.long * 9 / 16) }, frameRate: { ideal: 30, max: 30 } };
+    stream = await navigator.mediaDevices.getUserMedia({ video: video, audio: S.audio ? { echoCancellation: false, noiseSuppression: true } : false });
+  }
+  R.cam = stream;
+  CAM.srcObject = stream;
+  try { await CAM.play(); } catch (e) {}
+  await waitFor(() => CAM.videoWidth > 0, 5000);
+  lastFrame = Date.now();
+  stream.getTracks().forEach(t => t.addEventListener('ended', () => { if (R.want && R.cam === stream) restartPipeline('相機中斷'); }));
+  return stream;
+}
+
+function stopCamera() {
+  if (R.cam) {
+    R.cam.getTracks().forEach(t => t.stop());
+    if (R.cam._stopDemo) R.cam._stopDemo();
+  }
+  R.cam = null;
+  CAM.srcObject = null;
+}
+
+// 用 requestVideoFrameCallback 確認相機真的有新畫面
+(function watchFrames() {
+  if (!CAM.requestVideoFrameCallback) return;
+  const cb = () => { lastFrame = Date.now(); CAM.requestVideoFrameCallback(cb); };
+  CAM.requestVideoFrameCallback(cb);
+})();
+
+// ---------- 浮水印畫布 ----------
+let rafId = 0, lastDraw = 0;
+const stamp = { sec: -1, text: '' };
+function overlayOn() { return S.overlay && !!OUT.captureStream; }
+function applyPreviewMode() {
+  STAGE.classList.toggle('direct', !overlayOn());
+  $('#row-rot').classList.toggle('off', !overlayOn());
+  $('#row-g').classList.toggle('off', !S.gsensor);
+}
+function sizeCanvas() {
+  const sw = CAM.videoWidth || 1280, sh = CAM.videoHeight || 720;
+  const r90 = S.rotate % 180 !== 0;
+  const rw = r90 ? sh : sw, rh = r90 ? sw : sh;
+  const long = Math.min(QUALITY[S.quality].long, Math.max(sw, sh));
+  let w, h;
+  if (rw >= rh) { w = long; h = long * rh / rw; } else { h = long; w = long * rw / rh; }
+  w = Math.round(w / 2) * 2; h = Math.round(h / 2) * 2;
+  if (OUT.width !== w || OUT.height !== h) { OUT.width = w; OUT.height = h; }
+}
+function startDraw() {
+  if (!overlayOn() || rafId) return;
+  sizeCanvas();
+  const loop = ts => {
+    rafId = requestAnimationFrame(loop);
+    if (ts - lastDraw < 30) return; // 約 30fps
+    lastDraw = ts;
+    drawFrame();
+  };
+  rafId = requestAnimationFrame(loop);
+}
+function stopDraw() {
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = 0;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, OUT.width, OUT.height);
+}
+function drawFrame() {
+  const sw = CAM.videoWidth, sh = CAM.videoHeight;
+  if (!sw) return;
+  const W = OUT.width, H = OUT.height, rot = Number(S.rotate) || 0;
+  const r90 = rot % 180 !== 0;
+  const k = Math.min(W / (r90 ? sh : sw), H / (r90 ? sw : sh));
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  if (rot) ctx.rotate(rot * Math.PI / 180);
+  ctx.drawImage(CAM, -sw * k / 2, -sh * k / 2, sw * k, sh * k);
+  ctx.restore();
+  drawStamp(W, H);
+}
+function gpsFresh() { return G.t && Date.now() - G.t < 8000; }
+function stampText(d) {
+  let t = d.getFullYear() + '/' + pad(d.getMonth() + 1) + '/' + pad(d.getDate()) + ' ' + fmtTime(d);
+  if (S.gps) {
+    t += '   ' + (gpsFresh() && G.kmh != null ? String(Math.round(G.kmh)).padStart(3, ' ') : '---') + ' km/h';
+    if (gpsFresh()) t += '   ' + (G.lat >= 0 ? 'N' : 'S') + Math.abs(G.lat).toFixed(5) + ' ' + (G.lon >= 0 ? 'E' : 'W') + Math.abs(G.lon).toFixed(5);
+  }
+  return t;
+}
+function drawStamp(W, H) {
+  const now = new Date(), sec = Math.floor(now.getTime() / 1000);
+  if (sec !== stamp.sec) { stamp.sec = sec; stamp.text = stampText(now); }
+  const fs = Math.max(14, Math.round(Math.min(W, H) * 0.042));
+  ctx.font = '600 ' + fs + 'px ' + 'ui-monospace, Menlo, Consolas, monospace';
+  ctx.textBaseline = 'alphabetic';
+  const x = Math.round(fs * 0.7), y = H - Math.round(fs * 0.7);
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.max(3, fs / 5);
+  ctx.strokeStyle = 'rgba(0,0,0,.85)';
+  ctx.strokeText(stamp.text, x, y);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(stamp.text, x, y);
+}
+
+// ---------- 錄影 ----------
+function pickMime() {
+  if (!window.MediaRecorder) return null;
+  const list = ['video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  for (const m of list) { try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (e) {} }
+  return '';
+}
+function makeRecorder(stream, opts) {
+  const tries = [opts, opts.mimeType ? { mimeType: opts.mimeType } : null, {}].filter(Boolean);
+  let err;
+  for (const o of tries) {
+    try { const mr = new MediaRecorder(stream, o); mr.start(1000); return mr; } catch (e) { err = e; }
+  }
+  throw err;
+}
+function buildRecStream() {
+  const audio = R.cam.getAudioTracks();
+  if (overlayOn()) {
+    sizeCanvas();
+    const vt = OUT.captureStream(30).getVideoTracks()[0];
+    R.track = vt;
+    return new MediaStream([vt].concat(audio));
+  }
+  R.track = null;
+  return new MediaStream(R.cam.getVideoTracks().concat(audio));
+}
+
+function startSegment() {
+  const stream = buildRecStream();
+  const mime = pickMime();
+  const opts = { videoBitsPerSecond: QUALITY[S.quality].bps };
+  if (mime) opts.mimeType = mime;
+  if (stream.getAudioTracks().length) opts.audioBitsPerSecond = 64000;
+  let mr;
+  try { mr = makeRecorder(stream, opts); }
+  catch (e) { if (R.track) { R.track.stop(); R.track = null; } throw e; }
+  const now = Date.now();
+  const seg = {
+    id: newId(), start: now, end: now, bytes: 0, n: 0,
+    mime: mr.mimeType || mime || 'video/mp4', status: 'rec',
+    locked: now < lockUntil, lockReason: now < lockUntil ? '事件前後' : '',
+    w: overlayOn() ? OUT.width : CAM.videoWidth, h: overlayOn() ? OUT.height : CAM.videoHeight,
+    quality: S.quality, thumb: '', maxKmh: 0, track: [],
+  };
+  segs.push(seg);
+  R.seg = seg; R.mr = mr; R.lastData = now;
+  mr.ondataavailable = e => onData(seg, mr, e.data);
+  mr.onerror = e => { console.warn('MediaRecorder error', e.error || e); if (R.mr === mr) restartPipeline('錄影器錯誤'); };
+  enqueue(() => DB.putSeg(seg));
+  clearTimeout(R.segTimer);
+  R.segTimer = setTimeout(() => pipe(rotateSegment), SEG_SEC ? SEG_SEC * 1000 : S.segMin * 60000);
+  setTimeout(() => grabThumb(seg), 1500);
+  renderSoon(); updateHud();
+}
+
+function onData(seg, mr, blob) {
+  if (!blob || !blob.size) return;
+  const i = seg.n++, t = Date.now();
+  seg.bytes += blob.size;
+  seg.end = t;
+  if (mr.state === 'recording') R.timesliceOK = true;
+  R.lastData = t;
+  enqueue(() => saveChunk(seg, i, t, blob));
+  if (i % 10 === 9) enqueue(() => DB.putSeg(seg));
+}
+
+async function saveChunk(seg, i, t, blob) {
+  for (let k = 0; ; k++) {
+    try { await DB.putChunk(seg.id, i, t, blob); break; }
+    catch (e) {
+      if (!isQuota(e) || k >= 6) throw e;
+      if (!(await evictOldest())) throw e; // 沒東西可刪了
+    }
+  }
+  await enforceCap();
+}
+
+function evictable() {
+  const playing = P.seg && P.seg.id;
+  return segs.filter(s => !s.locked && s.status !== 'rec' && s.id !== playing).sort((a, b) => a.id - b.id);
+}
+async function evictOldest() {
+  const v = evictable()[0];
+  if (!v) return false;
+  await removeSeg(v);
+  return true;
+}
+async function enforceCap() {
+  const cap = capBytes();
+  let used = usedBytes();
+  if (used <= cap) { R.warnedFull = false; return; }
+  for (const v of evictable()) {
+    if (used <= cap) break;
+    await removeSeg(v);
+    used -= v.bytes;
+  }
+  if (used > cap && !R.warnedFull) { R.warnedFull = true; toast('已達儲存上限，鎖定的片段太多，請解鎖或刪除一些', 'warn'); }
+}
+async function removeSeg(s) {
+  await DB.delSeg(s.id);
+  segs = segs.filter(x => x !== s);
+  renderSoon();
+}
+function onWriteError(e) {
+  console.error('寫入失敗', e);
+  R.writeErrs++;
+  if (isQuota(e)) {
+    toast('手機儲存空間不足，已停止錄影。請刪除片段或騰出空間', 'warn');
+    stopRecording(true);
+  } else if (R.writeErrs === 1) {
+    toast('影片寫入失敗：' + (e && e.message || e), 'warn');
+  } else if (R.writeErrs >= 8) {
+    toast('影片一直無法寫入，已停止錄影', 'warn');
+    stopRecording(true);
+  }
+}
+
+function stopRecorder() {
+  const mr = R.mr, seg = R.seg, vt = R.track;
+  clearTimeout(R.segTimer);
+  R.mr = null; R.seg = null; R.track = null;
+  if (!mr) return Promise.resolve();
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (vt) vt.stop();
+      enqueue(() => finalizeSeg(seg));
+      resolve();
+    };
+    mr.addEventListener('stop', finish);
+    setTimeout(finish, 2500);
+    try { if (mr.state !== 'inactive') mr.stop(); else finish(); } catch (e) { finish(); }
+  });
+}
+async function finalizeSeg(seg) {
+  seg.status = 'done';
+  if (seg.bytes < 4096) { await removeSeg(seg); return; } // 只有檔頭，沒有畫面
+  await DB.putSeg(seg);
+  renderSoon();
+}
+
+async function rotateSegment() {
+  if (!R.want || !R.mr) return;
+  await stopRecorder();
+  if (!R.want || document.hidden) return;
+  if (!camAlive()) await ensureCamera();
+  startSegment();
+}
+
+function startRecording() {
+  if (R.want) return;
+  if (!envOK) { showErr(envMsgs.join('\n')); return; }
+  R.want = true; R.fails = 0;
+  lsSet('dashcam.hb', String(Date.now()));
+  if (S.gsensor) enableMotion(); // 要在使用者點擊當下要求權限
+  if (S.gps) startGps();
+  keepAwake();
+  showErr('');
+  setIdle(false);
+  updateHud();
+  return pipe(async () => {
+    if (!R.want) return;
+    try {
+      await ensureCamera();
+      applyPreviewMode();
+      startDraw();
+      if (!R.mr) startSegment();
+    } catch (e) {
+      R.want = false;
+      lsDel('dashcam.hb');
+      stopDraw(); stopCamera(); stopGps(); releaseWake();
+      setIdle(true);
+      showErr(camErrorText(e));
+    }
+    updateHud();
+  });
+}
+
+function stopRecording(silent) {
+  R.want = false;
+  lsDel('dashcam.hb');
+  stopGps(); releaseWake();
+  return pipe(async () => { await stopRecorder(); stopDraw(); stopCamera(); }).then(() => R.q).then(() => {
+    setIdle(true); updateHud(); renderIdleStats();
+    if (!silent) toast('已停止，影片都存好了');
+  });
+}
+
+function restartPipeline(reason) {
+  if (R.restartPending) return;
+  R.restartPending = true;
+  R.lastAttempt = Date.now();
+  return pipe(async () => {
+    R.restartPending = false;
+    if (!R.want) return;
+    await stopRecorder();
+    stopDraw(); stopCamera();
+    if (document.hidden) return; // 回到前景再重來
+    try {
+      await sleep(250);
+      await ensureCamera();
+      applyPreviewMode();
+      startDraw();
+      startSegment();
+      R.fails = 0;
+    } catch (e) {
+      R.fails++;
+      R.lastAttempt = Date.now();
+      console.warn(reason, e);
+      if (R.fails === 1 || R.fails % 5 === 0) toast(camErrorText(e), 'warn');
+    }
+    updateHud();
+  });
+}
+
+let unhealthy = 0;
+function watchdog() {
+  if (!R.want || document.hidden || pipeBusy) return;
+  const now = Date.now();
+  if (!R.mr) {
+    if (now - R.lastAttempt > Math.min(30000, 2000 * Math.pow(2, R.fails))) restartPipeline('恢復錄影');
+    return;
+  }
+  const bad = !camAlive() || R.mr.state === 'inactive' ||
+    (R.timesliceOK && now - R.lastData > 15000) ||
+    (CAM.requestVideoFrameCallback && lastFrame && now - lastFrame > 4000);
+  unhealthy = bad ? unhealthy + 1 : 0;
+  if (unhealthy >= 2) { unhealthy = 0; restartPipeline('畫面中斷'); }
+}
+
+function camErrorText(e) {
+  switch (e && e.name) {
+    case 'NotAllowedError': case 'SecurityError':
+      return '相機權限被拒絕。到 iPhone「設定 › Safari › 相機」改成「允許」或「詢問」，再重新整理這頁。';
+    case 'NotFoundError': case 'OverconstrainedError': return '找不到可用的相機。';
+    case 'NotReadableError': case 'AbortError': return '相機正被其他 App 使用。請關掉相機或視訊通話後再試。';
+    case 'NoFrames': return '相機有開但沒有畫面，請再按一次錄影。';
+    default: return '相機啟動失敗：' + ((e && e.message) || e);
+  }
+}
+
+// 每段開頭擷取一張縮圖
+function grabThumb(seg) {
+  if (seg.thumb || seg.status !== 'rec') return;
+  const src = overlayOn() ? OUT : CAM;
+  const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
+  if (!sw || !sh) return;
+  const k = Math.min(224 / sw, 224 / sh);
+  const c = document.createElement('canvas');
+  c.width = Math.round(sw * k); c.height = Math.round(sh * k);
+  try {
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    seg.thumb = c.toDataURL('image/jpeg', 0.6);
+  } catch (e) { return; }
+  enqueue(() => DB.putSeg(seg));
+  renderSoon();
+}
+
+// ---------- 鎖定事件 ----------
+function triggerEvent(reason, manual) {
+  const now = Date.now();
+  if (!manual && now - lastEvent < 10000) return;
+  lastEvent = now;
+  if (R.want) lockUntil = now + 30000;
+  const hit = segs.filter(s => !s.locked && (s.status === 'rec' || s.end >= now - 30000));
+  hit.forEach(s => { s.locked = true; s.lockReason = reason; enqueue(() => DB.putSeg(s)); });
+  const btn = $('#b-lock');
+  btn.classList.add('flash');
+  setTimeout(() => btn.classList.remove('flash'), 1200);
+  if (hit.length || R.want) toast((manual ? '已鎖定' : reason + '，已鎖定') + (R.want ? '目前片段，接下來 30 秒也會保留' : '最近的片段'));
+  else toast('最近 30 秒沒有片段可以鎖定');
+  renderSoon(); updateHud();
+}
+
+// ---------- GPS ----------
+const G = { id: null, kmh: null, lat: 0, lon: 0, t: 0, prev: null, err: '' };
+function startGps() {
+  if (G.id != null || !navigator.geolocation) return;
+  G.err = '';
+  G.id = navigator.geolocation.watchPosition(onPos, e => {
+    G.err = e.code === 1 ? '定位未授權' : '定位失敗';
+    if (e.code === 1) { toast('沒有定位權限，無法顯示車速', 'warn'); stopGps(); }
+    updateHud();
+  }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+}
+function stopGps() { if (G.id != null) navigator.geolocation.clearWatch(G.id); G.id = null; G.t = 0; G.kmh = null; G.prev = null; }
+function distM(a, b) {
+  const r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+  return 12742000 * Math.asin(Math.sqrt(h));
+}
+function onPos(p) {
+  const c = p.coords, t = p.timestamp || Date.now();
+  const cur = { lat: c.latitude, lon: c.longitude, t: t };
+  let ms = c.speed != null && c.speed >= 0 ? c.speed : null;
+  if (ms == null && G.prev) { const dt = (t - G.prev.t) / 1000; if (dt >= 0.5) ms = distM(G.prev, cur) / dt; }
+  G.prev = cur; G.lat = c.latitude; G.lon = c.longitude; G.t = Date.now(); G.err = '';
+  G.kmh = ms == null ? null : ms * 3.6;
+  const seg = R.seg;
+  if (seg) {
+    if (G.kmh != null && G.kmh > seg.maxKmh) seg.maxKmh = Math.round(G.kmh);
+    const last = seg.track[seg.track.length - 1];
+    if (!last || t - last[0] >= 2000) seg.track.push([t, +c.latitude.toFixed(6), +c.longitude.toFixed(6), G.kmh == null ? null : Math.round(G.kmh)]);
+  }
+}
+
+// ---------- 撞擊感測 ----------
+let motionOn = false;
+function onMotion(e) {
+  if (!R.want || !S.gsensor) return;
+  let g;
+  const a = e.acceleration;
+  if (a && a.x != null) g = Math.hypot(a.x, a.y, a.z) / 9.81;
+  else {
+    const b = e.accelerationIncludingGravity;
+    if (!b || b.x == null) return;
+    g = Math.abs(Math.hypot(b.x, b.y, b.z) - 9.81) / 9.81;
+  }
+  if (g >= Number(S.gLevel)) triggerEvent('偵測到撞擊 ' + g.toFixed(1) + 'G');
+}
+function enableMotion() {
+  if (typeof DeviceMotionEvent === 'undefined') return Promise.resolve(false);
+  const attach = () => { if (!motionOn) { window.addEventListener('devicemotion', onMotion); motionOn = true; } return true; };
+  if (typeof DeviceMotionEvent.requestPermission === 'function') {
+    return DeviceMotionEvent.requestPermission().then(r => r === 'granted' ? attach() : false, () => false);
+  }
+  return Promise.resolve(attach());
+}
+
+// ---------- 螢幕常亮 ----------
+let wake = null;
+async function keepAwake() {
+  if (!('wakeLock' in navigator) || wake || document.hidden) return;
+  try {
+    wake = await navigator.wakeLock.request('screen');
+    wake.addEventListener('release', () => { wake = null; updateHud(); });
+  } catch (e) { wake = null; }
+  updateHud();
+}
+function releaseWake() { try { if (wake) wake.release(); } catch (e) {} wake = null; }
+
+// ---------- 介面 ----------
+let toastTimer = 0;
+function toast(msg, kind) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'show' + (kind ? ' ' + kind : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = kind || ''; }, kind === 'warn' ? 4500 : 2600);
+}
+function showErr(msg) { const e = $('#err'); e.textContent = msg; e.hidden = !msg; }
+function setIdle(on) { $('#idle').hidden = !on; if (on) renderIdleStats(); }
+
+let recArmed = 0;
+function onRecButton() {
+  const b = $('#b-rec');
+  if (!R.want) { startRecording(); return; }
+  if (!b.classList.contains('armed')) {
+    b.classList.add('armed');
+    toast('再按一次停止錄影');
+    clearTimeout(recArmed);
+    recArmed = setTimeout(() => b.classList.remove('armed'), 3000);
+    return;
+  }
+  b.classList.remove('armed');
+  clearTimeout(recArmed);
+  stopRecording();
+}
+
+function updateHud() {
+  const now = Date.now();
+  $('#clock').textContent = fmtTime(now);
+  const pill = $('#pill'), pt = $('#pill-t'), sub = $('#sub');
+  if (R.want && R.seg) { pill.className = 'pill rec'; pt.textContent = 'REC ' + fmtDur(now - R.seg.start); }
+  else if (R.want) { pill.className = 'pill wait'; pt.textContent = R.fails ? '相機重試中…' : '啟動中…'; }
+  else { pill.className = 'pill'; pt.textContent = '待機'; }
+  sub.textContent = '';
+  if (R.want) {
+    sub.append(QUALITY[S.quality].label + ' · 每段 ' + segLabel() + (R.seg && R.seg.locked ? ' · 已鎖定' : ''));
+    if (!wake && !DEMO) { sub.append(' · '); sub.append(el('span', 'warn', '請確認自動鎖定為永不')); }
+  }
+  const sp = $('#speed');
+  sp.hidden = !S.gps;
+  if (S.gps) $('#kmh').textContent = gpsFresh() && G.kmh != null ? Math.round(G.kmh) : '--';
+  const used = usedBytes(), cap = capBytes();
+  $('#store-t').textContent = fmtBytes(used) + ' / ' + fmtBytes(cap);
+  $('#store-bar').style.width = Math.min(100, used / cap * 100) + '%';
+  $('#store').classList.toggle('full', used > cap * 0.95);
+  const rb = $('#b-rec');
+  rb.classList.toggle('on', R.want);
+  rb.setAttribute('aria-label', R.want ? '停止錄影' : '開始錄影');
+  if (!$('#dim').hidden) {
+    $('#dim-t').textContent = (R.want && R.seg ? '● REC ' + fmtDur(now - R.seg.start) : R.want ? '● 啟動中' : '○ 待機') + '  ' + fmtTime(now) + '  點一下回到畫面';
+  }
+}
+
+function renderIdleStats() {
+  const p = $('#idle-stats');
+  if (!segs.length) { p.textContent = '還沒有錄過片段。'; return; }
+  const locked = segs.filter(s => s.locked).length;
+  p.textContent = '已存 ' + segs.length + ' 段 · ' + fmtBytes(usedBytes()) + (locked ? ' · 鎖定 ' + locked + ' 段' : '') + ' · 上限 ' + fmtBytes(capBytes());
+}
+
+function bytesPerMin() {
+  const done = segs.filter(s => s.status === 'done' && s.quality === S.quality && s.end - s.start > 20000);
+  if (done.length) {
+    const b = done.reduce((a, s) => a + s.bytes, 0), ms = done.reduce((a, s) => a + (s.end - s.start), 0);
+    return { v: b / ms * 60000, measured: true };
+  }
+  return { v: QUALITY[S.quality].bps / 8 * 60, measured: false };
+}
+function renderSettingsInfo() {
+  const info = $('#set-info'), used = usedBytes(), cap = capBytes(), bpm = bytesPerMin();
+  const mins = Math.floor(cap / bpm.v);
+  info.innerHTML = '';
+  const line1 = el('div');
+  line1.append('已用 ', el('b', null, fmtBytes(used)), ' / 上限 ', el('b', null, fmtBytes(cap)), S.capGB === 'auto' ? '（自動）' : '');
+  const line2 = el('div', null, '目前畫質每分鐘約 ' + Math.round(bpm.v / MB) + ' MB' + (bpm.measured ? '（實測）' : '（估計）') + '，大約可以保留最近 ' + (mins >= 60 ? (mins / 60).toFixed(1) + ' 小時' : mins + ' 分鐘') + '的錄影。');
+  info.append(line1, line2);
+  if (quotaBytes) info.append(el('div', null, '瀏覽器給這個 App 的空間約 ' + fmtBytes(quotaBytes) + '。'));
+}
+
+// 片段清單
+let clipFilter = 'all', renderTimer = 0;
+function renderSoon() {
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(() => {
+    if ($('#sheet-clips').classList.contains('open')) renderClips();
+    if (!$('#idle').hidden) renderIdleStats();
+    if (P.seg) renderPlayerInfo();
+  }, 200);
+}
+function renderClips() {
+  const list = $('#clip-list');
+  list.textContent = '';
+  const locked = segs.filter(s => s.locked).length;
+  $('#clips-sum').textContent = segs.length + ' 段 · ' + fmtBytes(usedBytes()) + (locked ? ' · 鎖定 ' + locked : '');
+  const items = segs.slice().sort((a, b) => b.id - a.id).filter(s => clipFilter === 'all' || s.locked);
+  if (!items.length) {
+    list.append(el('div', 'empty', clipFilter === 'all' ? '還沒有片段。回到主畫面按紅色按鈕開始錄影。' : '沒有鎖定的片段。行車中按「鎖定」，或開啟撞擊自動鎖定。'));
+    return;
+  }
+  let day = '';
+  for (const s of items) {
+    const d = dayLabel(s.start);
+    if (d !== day) { day = d; list.append(el('div', 'day', d)); }
+    list.append(clipRow(s));
+  }
+}
+function clipRow(s) {
+  const row = el('div', 'clip');
+  row.dataset.id = s.id;
+  const th = el('div', 'th');
+  if (s.thumb) th.style.backgroundImage = 'url("' + s.thumb + '")';
+  const meta = el('div', 'meta');
+  meta.append(el('div', 't num', fmtTime(s.start) + ' – ' + fmtTime(s.end)));
+  const parts = [fmtDur(s.end - s.start), fmtBytes(s.bytes)];
+  if (s.maxKmh) parts.push('最高 ' + s.maxKmh + ' km/h');
+  meta.append(el('div', 'm num', parts.join(' · ')));
+  const bds = el('div', 'bds');
+  if (s.status === 'rec') bds.append(el('span', 'bd rec', '錄影中'));
+  if (s.locked) bds.append(el('span', 'bd lock', s.lockReason || '已鎖定'));
+  if (s.recovered) bds.append(el('span', 'bd', '中斷後救回'));
+  if (bds.childNodes.length) meta.append(bds);
+  const lk = el('button', 'lk' + (s.locked ? ' on' : ''));
+  lk.dataset.act = 'lock';
+  lk.setAttribute('aria-label', s.locked ? '解除鎖定' : '鎖定');
+  lk.innerHTML = s.locked ? ICON.lock : ICON.unlock;
+  row.append(th, meta, lk);
+  return row;
+}
+function segById(id) { id = Number(id); return segs.find(s => s.id === id); }
+function toggleLock(s) {
+  s.locked = !s.locked;
+  s.lockReason = s.locked ? '手動鎖定' : '';
+  enqueue(() => DB.putSeg(s));
+  renderSoon(); updateHud();
+}
+
+// 播放器
+const P = { seg: null, url: '', file: null, armed: 0 };
+function clipName(s) { return 'dashcam_' + fileStamp(s.start) + (s.mime.indexOf('mp4') >= 0 ? '.mp4' : '.webm'); }
+function canShareFiles(f) { try { return !!(navigator.canShare && navigator.canShare({ files: [f] })); } catch (e) { return false; } }
+function renderPlayerInfo() {
+  const s = P.seg;
+  if (!s) return;
+  $('#p-title').textContent = dayLabel(s.start) + ' ' + fmtTime(s.start);
+  const parts = [fmtDur(s.end - s.start), fmtBytes(s.bytes), (s.w && s.h ? s.w + '×' + s.h : '')];
+  if (s.maxKmh) parts.push('最高 ' + s.maxKmh + ' km/h');
+  if (s.locked) parts.push(s.lockReason || '已鎖定');
+  $('#p-info').textContent = parts.filter(Boolean).join(' · ');
+  const lb = $('#p-lock');
+  lb.classList.toggle('on', !!s.locked);
+  lb.querySelector('.ic').innerHTML = s.locked ? ICON.lock : ICON.unlock;
+  lb.querySelector('.lbl').textContent = s.locked ? '解除鎖定' : '鎖定';
+  const pt = s.track && s.track[0], map = $('#p-map');
+  map.hidden = !pt;
+  if (pt) map.href = 'https://maps.google.com/?q=' + pt[1] + ',' + pt[2];
+}
+async function openPlayer(s) {
+  if (s.status === 'rec') { toast('這段還在錄，錄完才能播放'); return; }
+  closePlayer();
+  P.seg = s;
+  $('#player').hidden = false;
+  resetDel();
+  renderPlayerInfo();
+  const save = $('#p-save');
+  save.disabled = true;
+  save.querySelector('.lbl').textContent = '準備中…';
+  try {
+    const rows = await DB.chunks(s.id);
+    if (P.seg !== s) return;
+    if (!rows.length) throw new Error('這段沒有影像資料');
+    const type = s.mime.split(';')[0] || 'video/mp4';
+    const blob = new Blob(rows.map(r => r.blob), { type: type });
+    P.url = URL.createObjectURL(blob);
+    P.file = new File([blob], clipName(s), { type: type });
+    $('#p-video').src = P.url;
+    save.disabled = false;
+    save.querySelector('.lbl').textContent = canShareFiles(P.file) ? '儲存到照片' : '下載影片';
+  } catch (e) {
+    save.querySelector('.lbl').textContent = '無法讀取';
+    toast('讀取失敗：' + e.message, 'warn');
+  }
+}
+function closePlayer() {
+  const v = $('#p-video');
+  try { v.pause(); } catch (e) {}
+  v.removeAttribute('src');
+  try { v.load(); } catch (e) {}
+  if (P.url) URL.revokeObjectURL(P.url);
+  P.url = ''; P.file = null; P.seg = null;
+  $('#player').hidden = true;
+}
+async function saveCurrent() {
+  if (!P.file) return;
+  if (canShareFiles(P.file)) {
+    try { await navigator.share({ files: [P.file] }); }
+    catch (e) { if (e.name !== 'AbortError') toast('分享失敗：' + e.message + '。可以改選「儲存到檔案」', 'warn'); }
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = P.url; a.download = P.file.name;
+  document.body.append(a); a.click(); a.remove();
+}
+function resetDel() {
+  const b = $('#p-del');
+  b.classList.remove('armed');
+  b.querySelector('.lbl').textContent = '刪除';
+  clearTimeout(P.armed);
+}
+async function deleteCurrent() {
+  const b = $('#p-del');
+  if (!b.classList.contains('armed')) {
+    b.classList.add('armed');
+    b.querySelector('.lbl').textContent = '再按一次刪除';
+    clearTimeout(P.armed);
+    P.armed = setTimeout(resetDel, 3000);
+    return;
+  }
+  const s = P.seg;
+  closePlayer();
+  if (s) { await enqueue(() => removeSeg(s)); toast('已刪除'); updateHud(); }
+}
+
+let wipeArmed = 0;
+function onWipe() {
+  const b = $('#b-wipe'), lbl = b.querySelector('.lbl');
+  const victims = segs.filter(s => !s.locked && s.status !== 'rec');
+  if (!victims.length) { toast('沒有可刪除的片段'); return; }
+  if (!b.classList.contains('armed')) {
+    b.classList.add('armed');
+    lbl.textContent = '確定刪除 ' + victims.length + ' 段？';
+    clearTimeout(wipeArmed);
+    wipeArmed = setTimeout(() => { b.classList.remove('armed'); lbl.textContent = '刪除'; }, 3500);
+    return;
+  }
+  b.classList.remove('armed'); lbl.textContent = '刪除';
+  enqueue(async () => { for (const s of victims) await removeSeg(s); }).then(() => {
+    toast('已刪除 ' + victims.length + ' 段'); updateHud(); renderSettingsInfo();
+  });
+}
+
+// 熄屏
+let dimMove = 0;
+function moveDimText() {
+  const d = $('#dim-t');
+  d.style.left = (8 + Math.random() * 60) + '%';
+  d.style.top = (10 + Math.random() * 70) + '%';
+}
+function openDim() {
+  $('#dim').hidden = false;
+  moveDimText();
+  clearInterval(dimMove);
+  dimMove = setInterval(moveDimText, 30000);
+  updateHud();
+}
+function closeDim() { $('#dim').hidden = true; clearInterval(dimMove); }
+
+// 面板
+function openSheet(id) {
+  const sh = $(id);
+  sh.classList.add('open');
+  if (id === '#sheet-clips') renderClips();
+  if (id === '#sheet-set') { refreshEstimate().then(renderSettingsInfo); renderSettingsInfo(); }
+}
+function closeSheets() { $$('.sheet.open').forEach(s => s.classList.remove('open')); }
+
+// 設定
+const parseVal = v => (v !== '' && !isNaN(v)) ? Number(v) : v;
+function bindSettings() {
+  $$('#sheet-set input[type=radio]').forEach(inp => {
+    inp.checked = String(S[inp.name]) === inp.value;
+    inp.addEventListener('change', () => { if (inp.checked) setOpt(inp.name, parseVal(inp.value), inp); });
+  });
+  $$('#sheet-set input[data-k]').forEach(inp => {
+    inp.checked = !!S[inp.dataset.k];
+    inp.addEventListener('change', () => setOpt(inp.dataset.k, inp.checked, inp));
+  });
+}
+function setOpt(k, v, inp) {
+  S[k] = v;
+  saveSettings();
+  switch (k) {
+    case 'segMin':
+      if (R.want) toast('下一段開始改成 ' + v + ' 分鐘');
+      break;
+    case 'quality': case 'audio': case 'overlay': case 'rotate':
+      applyPreviewMode();
+      if (R.want) { toast('套用設定，錄影重新開始'); restartPipeline('設定變更'); }
+      break;
+    case 'capGB':
+      if (!R.want) enqueue(enforceCap);
+      break;
+    case 'gps':
+      if (v) { startGps(); if (!R.want) setTimeout(() => { if (!R.want) stopGps(); }, 15000); }
+      else stopGps();
+      break;
+    case 'gsensor':
+      applyPreviewMode();
+      if (v) enableMotion().then(ok => {
+        if (ok) return;
+        S.gsensor = false; saveSettings(); inp.checked = false; applyPreviewMode();
+        toast('沒有取得動作感測權限，無法偵測撞擊', 'warn');
+      });
+      break;
+  }
+  updateHud();
+  renderSettingsInfo();
+}
+
+async function refreshEstimate() {
+  try {
+    if (navigator.storage && navigator.storage.estimate) {
+      const e = await navigator.storage.estimate();
+      quotaBytes = e.quota || 0;
+    }
+  } catch (e) {}
+}
+
+// 啟動時把上次沒正常結束的片段救回來
+async function recover() {
+  for (const s of segs.slice()) {
+    if (s.status !== 'rec') continue;
+    const rows = await DB.chunks(s.id);
+    const bytes = rows.reduce((a, r) => a + (r.blob.size || r.blob.byteLength || 0), 0);
+    if (bytes < 4096) { await DB.delSeg(s.id); segs = segs.filter(x => x !== s); continue; } // 只有檔頭，沒有畫面
+    s.bytes = bytes;
+    s.n = rows.length;
+    s.end = Math.max(s.end || 0, rows[rows.length - 1].t || 0);
+    s.status = 'done';
+    s.recovered = true;
+    await DB.putSeg(s);
+  }
+}
+
+let envMsgs = [];
+function checkEnv() {
+  const ua = navigator.userAgent;
+  if (/\bLine\//i.test(ua) || /FBAN|FBAV|Instagram|MicroMessenger/i.test(ua)) envMsgs.push('你正在 App 內建的瀏覽器裡，相機可能打不開。請點右上角選單，選「用 Safari 開啟」。');
+  if (!window.isSecureContext) { envOK = false; envMsgs.push('要用 https:// 開頭的網址開啟，相機才能啟動。'); }
+  if (!window.MediaRecorder) { envOK = false; envMsgs.push('這個瀏覽器不支援錄影。iPhone 需要 iOS 14.3 以上，建議更新到 iOS 15 或更新版本。'); }
+  if (!window.indexedDB) { envOK = false; envMsgs.push('這個瀏覽器不能存檔。如果在私密瀏覽模式，請改用一般模式。'); }
+  if (envMsgs.length) showErr(envMsgs.join('\n'));
+  const standalone = navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  if (standalone) { $('#ck-home').className = 'ok'; $('#ck-home-t').textContent = '已經從主畫面開啟。'; }
+  if ('wakeLock' in navigator) $('#ck-wake-t').textContent = '設定 › 螢幕顯示與亮度 › 自動鎖定。這個瀏覽器會盡量保持螢幕常亮，但設成「永不」最保險。';
+  else $('#ck-wake').className = 'warn';
+}
+
+function heartbeat() { if (R.want) lsSet('dashcam.hb', String(Date.now())); }
+
+function bindUi() {
+  $('#b-rec').addEventListener('click', onRecButton);
+  $('#b-lock').addEventListener('click', () => triggerEvent('手動鎖定', true));
+  $('#b-dim').addEventListener('click', openDim);
+  $('#dim').addEventListener('click', closeDim);
+  $('#b-clips').addEventListener('click', () => openSheet('#sheet-clips'));
+  $('#b-set').addEventListener('click', () => openSheet('#sheet-set'));
+  $$('[data-close]').forEach(b => b.addEventListener('click', closeSheets));
+  $$('input[name=cf]').forEach(r => r.addEventListener('change', () => { clipFilter = r.value; renderClips(); }));
+  $('#clip-list').addEventListener('click', e => {
+    const row = e.target.closest('.clip');
+    if (!row) return;
+    const s = segById(row.dataset.id);
+    if (!s) return;
+    if (e.target.closest('[data-act=lock]')) toggleLock(s);
+    else openPlayer(s);
+  });
+  $('#p-close').addEventListener('click', closePlayer);
+  $('#p-save').addEventListener('click', saveCurrent);
+  $('#p-lock').addEventListener('click', () => { if (P.seg) toggleLock(P.seg); });
+  $('#p-del').addEventListener('click', deleteCurrent);
+  $('#b-wipe').addEventListener('click', onWipe);
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (!$('#dim').hidden) closeDim();
+    else if (!$('#player').hidden) closePlayer();
+    else closeSheets();
+  });
+  // Safari 的常亮與動作感測需要使用者點擊過，任何一次點擊都補要求一次
+  document.addEventListener('pointerdown', () => {
+    if (R.want && !wake) keepAwake();
+    if (R.want && S.gsensor && !motionOn) enableMotion();
+  }, true);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (R.want) pipe(() => stopRecorder()); // 先把這段收尾，iOS 在背景會停掉相機
+    } else {
+      lastFrame = Date.now();
+      if (R.want) { keepAwake(); restartPipeline('回到前景'); }
+    }
+  });
+  window.addEventListener('pagehide', () => { if (R.mr) try { R.mr.stop(); } catch (e) {} });
+}
+
+async function boot() {
+  $('#ver').textContent = VERSION;
+  if (DEMO) $('#demo-tag').hidden = false;
+  bindUi();
+  bindSettings();
+  applyPreviewMode();
+  checkEnv();
+  try {
+    segs = await DB.allSegs();
+    await recover();
+  } catch (e) {
+    envOK = false;
+    envMsgs.push('無法使用瀏覽器的儲存空間（' + (e && e.message || e) + '）。如果在私密瀏覽模式，請改用一般模式。');
+    showErr(envMsgs.join('\n'));
+  }
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (e) {}
+  await refreshEstimate();
+  renderIdleStats();
+  updateHud();
+  setInterval(updateHud, 500);
+  setInterval(watchdog, 2000);
+  setInterval(heartbeat, 5000);
+  setInterval(refreshEstimate, 60000);
+  if (envOK) {
+    const hb = Number(lsGet('dashcam.hb')) || 0;
+    const resumed = hb && Date.now() - hb < 5 * 60000;
+    if (S.autostart || resumed) {
+      if (resumed && !S.autostart) toast('上次錄影被中斷，已自動繼續');
+      startRecording();
+    }
+  }
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+boot();
+</script>
+</body>
+</html>

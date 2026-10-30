@@ -1,0 +1,16 @@
+{
+  "name": "隨行錄 行車紀錄器",
+  "short_name": "隨行錄",
+  "description": "把舊 iPhone 變成循環錄影的行車紀錄器",
+  "lang": "zh-Hant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0A0E13",
+  "theme_color": "#0A0E13",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
