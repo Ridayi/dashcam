@@ -117,6 +117,12 @@ svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .check b{font-weight:600}
 .check span{color:var(--dim);font-size:13px}
 .stats{margin:0;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)}
+.trip{display:flex;flex-direction:column;gap:3px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)}
+.trip b{color:var(--ink);font-weight:600;font-size:14px}
+.trip .ok{color:var(--ok)}
+.trip .warn{color:var(--amber)}
+.trip-bk{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px}
+.trip:not([hidden])+.stats{border-top:0;padding-top:0}
 
 /* 全螢幕面板 */
 .sheet{position:fixed;inset:0;z-index:20;background:var(--ground);display:flex;flex-direction:column;transform:translateY(100%);visibility:hidden;transition:transform .25s ease,visibility 0s linear .25s}
@@ -146,6 +152,7 @@ svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .lk{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;color:var(--dim)}
 .lk.on{color:var(--amber)}
 .empty{padding:40px 8px;text-align:center;color:var(--dim)}
+.bkbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;margin-bottom:10px;border-radius:12px;background:rgba(242,163,58,.1);border:1px solid rgba(242,163,58,.4)}
 
 /* 分段選擇、開關 */
 .seg{display:flex;background:var(--raise);border-radius:10px;padding:3px;gap:3px}
@@ -177,6 +184,7 @@ svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .btn.danger{color:#FF8E85}
 .btn.danger.armed{background:var(--rec);color:#fff}
 .btn.on{color:var(--amber)}
+.btn.sm{height:36px;padding:0 12px;font-size:14px}
 
 /* 播放器 */
 #player{position:fixed;inset:0;z-index:25;background:#000;display:flex;flex-direction:column}
@@ -231,6 +239,7 @@ svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stro
       <li><b>橫放固定，關閉「直向鎖定」</b><span>從控制中心關掉直向鎖定，畫面才會跟著轉成橫的。</span></li>
       <li id="ck-home"><b>加入主畫面</b><span id="ck-home-t">Safari 分享按鈕 › 加入主畫面，之後從主畫面圖示全螢幕開啟。</span></li>
     </ul>
+    <div id="trip" class="trip" hidden></div>
     <p id="idle-stats" class="stats num">還沒有錄過片段。</p>
   </div>
 </section>
@@ -260,7 +269,13 @@ svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stro
     </div>
     <button class="x" data-close aria-label="關閉"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
   </header>
-  <div class="body"><div id="clip-list" class="list"></div></div>
+  <div class="body">
+    <div id="bk" class="bkbar" hidden>
+      <div class="lb"><b id="bk-t"></b><small id="bk-s"></small></div>
+      <button class="btn primary sm" id="b-bk"><span class="lbl">準備備份</span></button>
+    </div>
+    <div id="clip-list" class="list"></div>
+  </div>
 </section>
 
 <section id="sheet-set" class="sheet" aria-label="設定">
@@ -378,7 +393,7 @@ svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 
 <script>
 'use strict';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const qs = new URLSearchParams(location.search);
 const DEMO = qs.has('demo');
 const SEG_SEC = Math.max(0, Number(qs.get('seg')) || 0); // 測試用：片段秒數
@@ -495,6 +510,9 @@ const R = {
   hold: false,        // 重啟太頻繁：改成每 2 分鐘自動重試一次
   holdToast: 0,       // 上次提示暫停的時間
   healthySince: 0,    // 這次連續正常從什麼時候開始
+  trip: 0,            // 這次錄影（按下開始到停止）的編號
+  tripSeq: 0,         // 這次錄影的第幾段
+  resumeReason: '',   // 下一段是因為什麼中斷後重新開始的
   fails: 0,
   lastAttempt: 0,
   restartPending: false,
@@ -732,8 +750,10 @@ function startSegment() {
     locked: now < lockUntil, lockReason: now < lockUntil ? '事件前後' : '',
     w: overlayOn() ? OUT.width : CAM.videoWidth, h: overlayOn() ? OUT.height : CAM.videoHeight,
     quality: S.quality, thumb: '', maxKmh: 0, track: [],
+    trip: R.trip, k: R.tripSeq++, after: R.resumeReason,
   };
   segs.push(seg);
+  R.resumeReason = '';
   // 每台錄影器的狀態重新計算
   R.seg = seg; R.mr = mr; R.lastData = now; R.lastReq = now; R.timesliceOK = false; R.unhealthy = 0;
   mr.ondataavailable = e => onData(seg, mr, e.data);
@@ -903,6 +923,7 @@ function startRecording() {
   if (R.want || !ready) return; // 舊片段還沒讀完前不能錄，否則新片段會被清單蓋掉
   if (!envOK) { showErr(envMsgs.join('\n')); return; }
   R.want = true; R.fails = 0; R.slowStop = false; R.hold = false; R.restarts = [];
+  R.trip = Date.now(); R.tripSeq = 0; R.resumeReason = '';
   lsSet('dashcam.hb', String(Date.now()));
   if (S.gsensor) enableMotion(); // 要在使用者點擊當下要求權限
   if (S.gps) startGps();
@@ -943,6 +964,7 @@ function restartPipeline(reason) {
   R.restartPending = true;
   R.lastAttempt = Date.now();
   R.healthySince = 0;
+  if (!R.resumeReason) R.resumeReason = reason; // 記第一個原因：重啟失敗再重試時不覆蓋
   return pipe(async () => {
     R.restartPending = false;
     if (!R.want) return;
@@ -1227,8 +1249,50 @@ function updateHud() {
   }
 }
 
+function needsBackup(s) { return s.locked && s.status === 'done' && !s.backed && !s.deleting && !s.deleted; }
+function secText(ms) { const s = Math.round(ms / 1000); return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + s % 60 + ' 秒'; }
+
+// 上次錄影摘要：手機沒人看著錄，下車後一眼看出這趟有沒有錄完整
+function renderTrip() {
+  const box = $('#trip');
+  box.textContent = '';
+  let id = 0;
+  for (const s of segs) if (s.trip > id) id = s.trip;
+  const list = id ? segs.filter(s => s.trip === id).sort((a, b) => a.k - b.k) : [];
+  const pend = segs.filter(needsBackup).length;
+  box.hidden = !list.length && !pend;
+  if (list.length) {
+    const first = list[0], last = list[list.length - 1];
+    const ms = list.reduce((a, s) => a + (s.end - s.start), 0);
+    const gone = last.k + 1 - list.length; // 已被循環覆蓋或手動刪除
+    box.append(el('div', 'num', '上次錄影 ' + dayLabel(first.start) + ' ' + fmtTime(first.start).slice(0, 5) + '–' + fmtTime(last.end).slice(0, 5)));
+    box.append(el('b', 'num', '保留 ' + list.length + ' 段，共 ' + fmtDur(ms) + (gone ? '（另有 ' + gone + ' 段已被覆蓋或刪除）' : '')));
+    const count = f => list.filter(f).length;
+    const cam = count(s => s.after && s.after !== '回到前景'), bg = count(s => s.after === '回到前景');
+    let gap = 0;
+    list.forEach((s, j) => { const p = list[j - 1]; if (s.after && p && p.k === s.k - 1) gap += Math.max(0, s.start - p.end); });
+    const issues = [];
+    if (cam) issues.push('相機中斷 ' + cam + ' 次');
+    if (bg) issues.push('切到背景 ' + bg + ' 次');
+    if (gap >= 1000) issues.push('共漏錄約 ' + secText(gap));
+    if (count(s => s.lost)) issues.push(count(s => s.lost) + ' 段有缺損');
+    if (count(s => s.status === 'closing')) issues.push(count(s => s.status === 'closing') + ' 段收尾未完成');
+    if (count(s => s.incomplete)) issues.push(count(s => s.incomplete) + ' 段結尾不完整');
+    if (count(s => s.recovered)) issues.push('App 被關掉過，救回 ' + count(s => s.recovered) + ' 段');
+    box.append(issues.length ? el('div', 'warn num', issues.join(' · ')) : el('div', 'ok', '沒有中斷或缺損'));
+  }
+  if (pend) {
+    const row = el('div', 'trip-bk');
+    const go = el('button', 'btn sm', '去備份');
+    go.addEventListener('click', openLockedClips);
+    row.append(el('span', 'warn', pend + ' 段鎖定片段還沒備份到照片'), go);
+    box.append(row);
+  }
+}
+
 function renderIdleStats() {
   const p = $('#idle-stats');
+  renderTrip();
   if (!segs.length) { p.textContent = '還沒有錄過片段。'; return; }
   const locked = segs.filter(s => s.locked).length;
   p.textContent = '已存 ' + segs.length + ' 段 · ' + fmtBytes(usedBytes()) + (locked ? ' · 鎖定 ' + locked + ' 段' : '') + ' · 上限 ' + fmtBytes(capBytes());
@@ -1268,6 +1332,7 @@ function renderClips() {
   list.textContent = '';
   const locked = segs.filter(s => s.locked).length;
   $('#clips-sum').textContent = segs.length + ' 段 · ' + fmtBytes(usedBytes()) + (locked ? ' · 鎖定 ' + locked : '');
+  renderBackup();
   const items = segs.slice().sort((a, b) => b.id - a.id).filter(s => clipFilter === 'all' || s.locked);
   if (!items.length) {
     list.append(el('div', 'empty', clipFilter === 'all' ? '還沒有片段。回到主畫面按紅色按鈕開始錄影。' : '沒有鎖定的片段。行車中按「鎖定」，或開啟撞擊自動鎖定。'));
@@ -1297,6 +1362,7 @@ function clipRow(s) {
   if (s.incomplete) bds.append(el('span', 'bd warn', '結尾不完整'));
   if (s.locked) bds.append(el('span', 'bd lock', s.lockReason || '已鎖定'));
   if (s.recovered) bds.append(el('span', 'bd', '中斷後救回'));
+  if (s.backed) bds.append(el('span', 'bd', '已備份'));
   if (bds.childNodes.length) meta.append(bds);
   const lk = el('button', 'lk' + (s.locked ? ' on' : ''));
   lk.dataset.act = 'lock';
@@ -1317,7 +1383,8 @@ function toggleLock(s) {
 // 播放器
 const P = { seg: null, url: '', file: null, armed: 0 };
 function clipName(s) { return 'dashcam_' + fileStamp(s.start) + (s.mime.indexOf('mp4') >= 0 ? '.mp4' : '.webm'); }
-function canShareFiles(f) { try { return !!(navigator.canShare && navigator.canShare({ files: [f] })); } catch (e) { return false; } }
+function canShareFiles(files) { try { return !!(navigator.canShare && navigator.canShare({ files: files })); } catch (e) { return false; } }
+function markBacked(s) { if (s.deleted || s.backed) return; s.backed = true; saveSegMeta(s); renderSoon(); }
 function renderPlayerInfo() {
   const s = P.seg;
   if (!s) return;
@@ -1327,6 +1394,7 @@ function renderPlayerInfo() {
   if (s.locked) parts.push(s.lockReason || '已鎖定');
   if (s.lost) parts.push('有缺損');
   if (s.incomplete) parts.push('結尾不完整');
+  if (s.backed) parts.push('已備份');
   $('#p-info').textContent = parts.filter(Boolean).join(' · ');
   const lb = $('#p-lock');
   lb.classList.toggle('on', !!s.locked);
@@ -1356,7 +1424,7 @@ async function openPlayer(s) {
     P.file = new File([blob], clipName(s), { type: type });
     $('#p-video').src = P.url;
     save.disabled = false;
-    save.querySelector('.lbl').textContent = canShareFiles(P.file) ? '儲存到照片' : '下載影片';
+    save.querySelector('.lbl').textContent = canShareFiles([P.file]) ? '儲存到照片' : '下載影片';
   } catch (e) {
     save.querySelector('.lbl').textContent = '無法讀取';
     toast('讀取失敗：' + e.message, 'warn');
@@ -1372,16 +1440,81 @@ function closePlayer() {
   $('#player').hidden = true;
 }
 async function saveCurrent() {
-  if (!P.file) return;
-  if (canShareFiles(P.file)) {
-    try { await navigator.share({ files: [P.file] }); }
+  const s = P.seg;
+  if (!P.file || !s) return;
+  if (canShareFiles([P.file])) {
+    try { await navigator.share({ files: [P.file] }); markBacked(s); }
     catch (e) { if (e.name !== 'AbortError') toast('分享失敗：' + e.message + '。可以改選「儲存到檔案」', 'warn'); }
     return;
   }
   const a = document.createElement('a');
   a.href = P.url; a.download = P.file.name;
   document.body.append(a); a.click(); a.remove();
+  markBacked(s);
 }
+
+// 鎖定片段整批備份：先讀好檔案，再按一次分享（iOS 要在點擊當下呼叫分享，不能先等讀檔）
+const BK = { files: [], segs: [], busy: 0, gen: 0, single: false, can: null };
+function pendingBackup() { return segs.filter(needsBackup).sort((a, b) => a.start - b.start); }
+function clearBackup() { BK.gen++; BK.busy = 0; BK.files = []; BK.segs = []; }
+function renderBackup() {
+  if (BK.segs.some(s => !needsBackup(s))) clearBackup(); // 清單變了，重新準備
+  if (BK.can == null) BK.can = canShareFiles([new File([new Uint8Array(1)], 'test.mp4', { type: 'video/mp4' })]);
+  const pend = pendingBackup(), btn = $('#b-bk'), sub = $('#bk-s');
+  $('#bk').hidden = !pend.length;
+  if (!pend.length) return;
+  $('#bk-t').textContent = pend.length + ' 段鎖定片段還沒備份到照片';
+  btn.hidden = !BK.can;
+  btn.disabled = !!BK.busy;
+  if (!BK.can) sub.textContent = '這個瀏覽器不能分享檔案，請打開片段按「下載影片」';
+  else if (BK.busy) { btn.querySelector('.lbl').textContent = '準備中…'; sub.textContent = '正在讀取影片'; }
+  else if (BK.files.length) { btn.querySelector('.lbl').textContent = '分享 ' + BK.files.length + ' 段'; sub.textContent = '在分享選單選「儲存影片」，就會存到照片'; }
+  else { btn.querySelector('.lbl').textContent = '準備備份'; sub.textContent = '影片只存在 Safari 裡，清除網站資料就會不見'; }
+}
+async function prepareBackup() {
+  if (BK.busy) return;
+  const g = ++BK.gen;
+  BK.busy = g; BK.files = []; BK.segs = [];
+  renderBackup();
+  const max = BK.single ? 1 : 20, cap = R.useBuffer ? 200 * MB : 600 * MB; // 存成 ArrayBuffer 時檔案在記憶體裡，少拿一點
+  let total = 0;
+  try {
+    for (const s of pendingBackup()) {
+      if (BK.files.length >= max || (BK.files.length && total + s.bytes > cap)) break;
+      const rows = await DB.chunks(s.id);
+      if (BK.gen !== g) return; // 面板關掉或清單變了
+      if (!rows.length || !needsBackup(s)) continue;
+      const f = new File(rows.map(r => r.blob), clipName(s), { type: s.mime.split(';')[0] || 'video/mp4' });
+      if (BK.files.length && !canShareFiles(BK.files.concat(f))) break;
+      BK.files.push(f); BK.segs.push(s); total += s.bytes;
+    }
+  } catch (e) {
+    if (BK.gen !== g) return;
+    BK.files = []; BK.segs = [];
+    toast('讀取失敗：' + e.message, 'warn');
+  }
+  if (BK.gen !== g) return;
+  BK.busy = 0;
+  renderBackup();
+}
+function shareBackup() {
+  const files = BK.files, list = BK.segs;
+  navigator.share({ files: files }).then(() => {
+    list.forEach(markBacked);
+    clearBackup();
+    toast('已備份 ' + list.length + ' 段');
+    renderSoon();
+  }, e => {
+    if (e.name === 'AbortError') return;
+    if (files.length > 1 && !BK.single) {
+      BK.single = true; clearBackup();
+      toast('一次分享太多段失敗，改成一次一段，請再按「準備備份」', 'warn');
+    } else toast('分享失敗：' + e.message + '。可以改選「儲存到檔案」', 'warn');
+    renderSoon();
+  });
+}
+function onBackupButton() { if (BK.files.length) shareBackup(); else prepareBackup(); }
+function openLockedClips() { clipFilter = 'locked'; $('#cf-lock').checked = true; openSheet('#sheet-clips'); }
 function resetDel() {
   const b = $('#p-del');
   b.classList.remove('armed');
@@ -1443,7 +1576,7 @@ function openSheet(id) {
   if (id === '#sheet-clips') renderClips();
   if (id === '#sheet-set') { refreshEstimate().then(renderSettingsInfo); renderSettingsInfo(); }
 }
-function closeSheets() { $$('.sheet.open').forEach(s => s.classList.remove('open')); }
+function closeSheets() { $$('.sheet.open').forEach(s => s.classList.remove('open')); clearBackup(); }
 
 // 設定
 const parseVal = v => (v !== '' && !isNaN(v)) ? Number(v) : v;
@@ -1549,6 +1682,7 @@ function bindUi() {
   });
   $('#p-close').addEventListener('click', closePlayer);
   $('#p-save').addEventListener('click', saveCurrent);
+  $('#b-bk').addEventListener('click', onBackupButton);
   $('#p-lock').addEventListener('click', () => { if (P.seg) toggleLock(P.seg); });
   $('#p-del').addEventListener('click', deleteCurrent);
   $('#b-wipe').addEventListener('click', onWipe);
