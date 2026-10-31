@@ -1,5 +1,5 @@
 // 隨行錄：離線快取。主頁面先試網路（3 秒內），失敗就用快取，車上沒網路也能開。
-const CACHE = 'dashcam-v1.0.0';
+const CACHE = 'dashcam-v1.1.0';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

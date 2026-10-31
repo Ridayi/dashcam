@@ -142,6 +142,7 @@ svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .bd{font-size:11px;padding:1px 7px;border-radius:9px;background:var(--raise);color:var(--dim);white-space:nowrap}
 .bd.lock{background:rgba(242,163,58,.18);color:var(--amber)}
 .bd.rec{background:rgba(255,69,58,.18);color:#FF9F99}
+.bd.warn{background:none;border:1px solid var(--amber);color:var(--amber);padding:0 6px}
 .lk{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;color:var(--dim)}
 .lk.on{color:var(--amber)}
 .empty{padding:40px 8px;text-align:center;color:var(--dim)}
@@ -241,7 +242,7 @@ svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stro
   <button class="ctl" id="b-lock" aria-label="鎖定目前片段">
     <svg class="i" viewBox="0 0 24 24"><path d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg><span>鎖定</span>
   </button>
-  <button id="b-rec" class="recbtn" aria-label="開始錄影"><i></i></button>
+  <button id="b-rec" class="recbtn" aria-label="開始錄影" disabled><i></i></button>
   <button class="ctl" id="b-dim" aria-label="熄屏">
     <svg class="i" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/></svg><span>熄屏</span>
   </button>
@@ -377,7 +378,7 @@ svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 
 <script>
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const qs = new URLSearchParams(location.search);
 const DEMO = qs.has('demo');
 const SEG_SEC = Math.max(0, Number(qs.get('seg')) || 0); // 測試用：片段秒數
@@ -428,7 +429,7 @@ function dayLabel(t) {
   return (d.getMonth() + 1) + '月' + d.getDate() + '日 週' + '日一二三四五六'[d.getDay()];
 }
 function fileStamp(t) { const d = new Date(t); return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()); }
-function segLabel() { return SEG_SEC ? SEG_SEC + ' 秒' : S.segMin + ' 分鐘'; }
+function segLabel() { return SEG_SEC ? SEG_SEC + ' 秒' : (R.shortSeg ? 1 : S.segMin) + ' 分鐘'; }
 
 // ---------- IndexedDB：片段資料 + 每秒一塊的影片資料 ----------
 const DB = (() => {
@@ -465,6 +466,7 @@ const DB = (() => {
   }
   const range = id => IDBKeyRange.bound([id, 0], [id, Infinity]);
   return {
+    reset: () => { p = null; }, // 下次寫入重新開連線
     allSegs: () => run(['segments'], 'readonly', (t, o) => { const r = t.objectStore('segments').getAll(); r.onsuccess = () => { o.v = r.result; }; }),
     putSeg: seg => run(['segments'], 'readwrite', t => { t.objectStore('segments').put(seg); }),
     putChunk: (seg, i, tm, blob) => run(['chunks'], 'readwrite', t => { t.objectStore('chunks').put({ seg: seg, i: i, t: tm, blob: blob }); }),
@@ -483,19 +485,31 @@ const R = {
   seg: null,          // 目前片段
   track: null,        // 浮水印畫布的影像軌
   segTimer: 0,
-  lastData: 0,
-  timesliceOK: false, // 瀏覽器有每秒交出資料
+  lastData: 0,        // 目前錄影器最後一次交出資料
+  lastReq: 0,         // 最後一次主動要資料
+  timesliceOK: false, // 目前錄影器有在錄影中交出資料
+  shortSeg: false,    // 瀏覽器不按秒交資料：這次開啟期間改成每段 1 分鐘
+  unhealthy: 0,
+  mutedAt: 0,         // 相機軌被暫停的時間
+  restarts: [],       // 因相機問題重啟的時間
+  hold: false,        // 重啟太頻繁：改成每 2 分鐘自動重試一次
+  holdToast: 0,       // 上次提示暫停的時間
+  healthySince: 0,    // 這次連續正常從什麼時候開始
   fails: 0,
   lastAttempt: 0,
   restartPending: false,
   q: Promise.resolve(), // 寫入佇列（依序寫入）
-  writeErrs: 0,
+  pendingBytes: 0,    // 已收到、還沒寫完的資料量
+  chunkErrs: 0,       // 影片資料連續寫入失敗次數
+  useBuffer: lsGet('dashcam.buf') === '1', // 這台不收 Blob，改存 ArrayBuffer
+  slowStop: false,
   warnedFull: false,
 };
 let segs = [];
-let lockUntil = 0, lastEvent = 0, lastId = 0, lastFrame = 0;
+let lockUntil = 0, lastEvent = 0, lastId = 0;
 let quotaBytes = 0;
-let envOK = true;
+let envOK = true, ready = false;
+const STOP_WAIT = 10000, STOP_GIVEUP = 60000, PENDING_MAX = 48 * MB;
 
 function newId() { let t = Date.now(); if (t <= lastId) t = lastId + 1; lastId = t; return t; }
 function usedBytes() { return segs.reduce((a, s) => a + (s.bytes || 0), 0); }
@@ -515,9 +529,11 @@ function pipe(fn) {
   return p;
 }
 function enqueue(fn) {
-  R.q = R.q.then(fn).then(() => { R.writeErrs = 0; }, onWriteError);
+  R.q = R.q.then(fn).catch(onWriteError);
   return R.q;
 }
+// 片段資料一律走這裡：執行當下已刪除的片段就不再寫回
+function saveSegMeta(s) { return enqueue(() => s.deleted ? null : DB.putSeg(s)); }
 
 // ---------- 相機 ----------
 function waitFor(cond, ms) {
@@ -576,8 +592,15 @@ async function ensureCamera() {
   CAM.srcObject = stream;
   try { await CAM.play(); } catch (e) {}
   await waitFor(() => CAM.videoWidth > 0, 5000);
-  lastFrame = Date.now();
-  stream.getTracks().forEach(t => t.addEventListener('ended', () => { if (R.want && R.cam === stream) restartPipeline('相機中斷'); }));
+  R.mutedAt = 0;
+  resetFrozen();
+  stream.getTracks().forEach(t => t.addEventListener('ended', () => { if (R.want && R.cam === stream) healthRestart('相機中斷'); }));
+  // 來電等中斷時相機軌通常是暫停（muted）而不是結束
+  stream.getVideoTracks().forEach(t => {
+    t.addEventListener('mute', () => { if (R.cam === stream && !R.mutedAt) R.mutedAt = Date.now(); });
+    t.addEventListener('unmute', () => { if (R.cam === stream) R.mutedAt = 0; });
+    if (t.muted) R.mutedAt = Date.now(); // 監聽前就已經暫停
+  });
   return stream;
 }
 
@@ -587,15 +610,9 @@ function stopCamera() {
     if (R.cam._stopDemo) R.cam._stopDemo();
   }
   R.cam = null;
+  R.mutedAt = 0;
   CAM.srcObject = null;
 }
-
-// 用 requestVideoFrameCallback 確認相機真的有新畫面
-(function watchFrames() {
-  if (!CAM.requestVideoFrameCallback) return;
-  const cb = () => { lastFrame = Date.now(); CAM.requestVideoFrameCallback(cb); };
-  CAM.requestVideoFrameCallback(cb);
-})();
 
 // ---------- 浮水印畫布 ----------
 let rafId = 0, lastDraw = 0;
@@ -717,47 +734,93 @@ function startSegment() {
     quality: S.quality, thumb: '', maxKmh: 0, track: [],
   };
   segs.push(seg);
-  R.seg = seg; R.mr = mr; R.lastData = now;
+  // 每台錄影器的狀態重新計算
+  R.seg = seg; R.mr = mr; R.lastData = now; R.lastReq = now; R.timesliceOK = false; R.unhealthy = 0;
   mr.ondataavailable = e => onData(seg, mr, e.data);
-  mr.onerror = e => { console.warn('MediaRecorder error', e.error || e); if (R.mr === mr) restartPipeline('錄影器錯誤'); };
-  enqueue(() => DB.putSeg(seg));
-  clearTimeout(R.segTimer);
-  R.segTimer = setTimeout(() => pipe(rotateSegment), SEG_SEC ? SEG_SEC * 1000 : S.segMin * 60000);
+  mr.onerror = e => { console.warn('MediaRecorder error', e.error || e); if (R.mr === mr) healthRestart('錄影器錯誤'); };
+  saveSegMeta(seg);
+  scheduleRotate();
   setTimeout(() => grabThumb(seg), 1500);
   renderSoon(); updateHud();
+}
+function segLen() {
+  const base = SEG_SEC ? SEG_SEC * 1000 : S.segMin * 60000;
+  return R.shortSeg ? Math.min(base, 60000) : base;
+}
+function scheduleRotate() {
+  clearTimeout(R.segTimer);
+  if (R.seg) R.segTimer = setTimeout(() => pipe(rotateSegment), Math.max(0, R.seg.start + segLen() - Date.now()));
 }
 
 function onData(seg, mr, blob) {
   if (!blob || !blob.size) return;
-  const i = seg.n++, t = Date.now();
-  seg.bytes += blob.size;
+  const i = seg.n++, t = Date.now(); // 收到就編號，順序才不會亂
   seg.end = t;
-  if (mr.state === 'recording') R.timesliceOK = true;
-  R.lastData = t;
+  if (mr === R.mr) { // 舊錄影器晚到的資料照存，但不算目前錄影器的狀態
+    if (mr.state === 'recording') R.timesliceOK = true;
+    R.lastData = t;
+  }
+  R.pendingBytes += blob.size;
   enqueue(() => saveChunk(seg, i, t, blob));
-  if (i % 10 === 9) enqueue(() => DB.putSeg(seg));
+  if (i % 10 === 9) saveSegMeta(seg);
+  if (R.pendingBytes > PENDING_MAX && R.want && !R.slowStop) {
+    R.slowStop = true;
+    toast('手機寫入太慢，已停止錄影，以免 App 被系統關掉', 'warn');
+    stopRecording(true);
+  }
 }
+
+function isCloneErr(e) { return e && (e.name === 'DataCloneError' || e.name === 'UnknownError' || e.name === 'NotSupportedError'); }
+function toBuffer(blob) { return blob.arrayBuffer ? blob.arrayBuffer() : new Response(blob).arrayBuffer(); }
 
 async function saveChunk(seg, i, t, blob) {
-  for (let k = 0; ; k++) {
-    try { await DB.putChunk(seg.id, i, t, blob); break; }
-    catch (e) {
-      if (!isQuota(e) || k >= 6) throw e;
-      if (!(await evictOldest())) throw e; // 沒東西可刪了
+  let saved = false;
+  try {
+    for (let k = 0, q = 0; !seg.deleted; ) {
+      try {
+        const data = R.useBuffer ? await toBuffer(blob) : blob; // 先轉好再開交易
+        await DB.putChunk(seg.id, i, t, data);
+        saved = true;
+        break;
+      } catch (e) {
+        if (isQuota(e)) {
+          if (q++ >= 6 || !(await evictOldest())) throw e; // 沒東西可刪了（刪除失敗也會丟出來）
+        } else if (!R.useBuffer && isCloneErr(e)) {
+          R.useBuffer = true; lsSet('dashcam.buf', '1');
+        } else if (k++ < 2) {
+          await sleep(300); DB.reset();
+        } else {
+          console.error('影片資料寫入失敗', e);
+          break;
+        }
+      }
     }
+  } finally {
+    R.pendingBytes -= blob.size;
+    if (!saved && !seg.deleted) markLost(seg); // 不管從哪條路失敗，都只記一次
   }
+  if (!saved) return;
+  seg.bytes += blob.size; // 寫進去了才算
+  R.chunkErrs = 0;
+  if (seg.status === 'done') saveSegMeta(seg); // 收尾後才到的資料
   await enforceCap();
 }
-
-function evictable() {
-  const playing = P.seg && P.seg.id;
-  return segs.filter(s => !s.locked && s.status !== 'rec' && s.id !== playing).sort((a, b) => a.id - b.id);
+function markLost(seg) {
+  seg.lost = (seg.lost || 0) + 1;
+  saveSegMeta(seg);
+  renderSoon();
+  R.chunkErrs++;
+  if (R.chunkErrs === 1) toast('有一秒影片沒存到，這段會標示「有缺損」', 'warn');
+  if (R.chunkErrs >= 8 && R.want) { toast('影片一直無法寫入，已停止錄影', 'warn'); stopRecording(true); }
 }
+
+function canEvict(s) {
+  return !s.locked && s.status === 'done' && !s.deleting && !s.deleted && !(P.seg && P.seg.id === s.id);
+}
+function evictable() { return segs.filter(canEvict).sort((a, b) => a.id - b.id); }
 async function evictOldest() {
   const v = evictable()[0];
-  if (!v) return false;
-  await removeSeg(v);
-  return true;
+  return v ? removeSeg(v) : false;
 }
 async function enforceCap() {
   const cap = capBytes();
@@ -765,27 +828,30 @@ async function enforceCap() {
   if (used <= cap) { R.warnedFull = false; return; }
   for (const v of evictable()) {
     if (used <= cap) break;
-    await removeSeg(v);
-    used -= v.bytes;
+    if (!canEvict(v)) continue; // 刪前一段時可能剛被鎖定
+    if (await removeSeg(v)) used -= v.bytes;
   }
   if (used > cap && !R.warnedFull) { R.warnedFull = true; toast('已達儲存上限，鎖定的片段太多，請解鎖或刪除一些', 'warn'); }
 }
+// 資料庫真的刪掉才移出清單；刪除失敗就還原，下次還能再刪
 async function removeSeg(s) {
-  await DB.delSeg(s.id);
+  if (s.deleting || s.deleted) return false;
+  s.deleting = true;
+  try { await DB.delSeg(s.id); }
+  finally { s.deleting = false; }
+  s.deleted = true;
   segs = segs.filter(x => x !== s);
   renderSoon();
+  return true;
 }
+let lastWriteToast = 0;
 function onWriteError(e) {
   console.error('寫入失敗', e);
-  R.writeErrs++;
   if (isQuota(e)) {
-    toast('手機儲存空間不足，已停止錄影。請刪除片段或騰出空間', 'warn');
-    stopRecording(true);
-  } else if (R.writeErrs === 1) {
-    toast('影片寫入失敗：' + (e && e.message || e), 'warn');
-  } else if (R.writeErrs >= 8) {
-    toast('影片一直無法寫入，已停止錄影', 'warn');
-    stopRecording(true);
+    if (R.want) { toast('手機儲存空間不足，已停止錄影。請刪除片段或騰出空間', 'warn'); stopRecording(true); }
+  } else if (Date.now() - lastWriteToast > 30000) {
+    lastWriteToast = Date.now();
+    toast('片段資料寫入失敗：' + (e && e.message || e), 'warn');
   }
 }
 
@@ -795,20 +861,30 @@ function stopRecorder() {
   R.mr = null; R.seg = null; R.track = null;
   if (!mr) return Promise.resolve();
   return new Promise(resolve => {
-    let done = false;
+    let done = false, waitT = 0, giveT = 0;
     const finish = () => {
       if (done) return;
       done = true;
+      clearTimeout(waitT); clearTimeout(giveT);
       if (vt) vt.stop();
-      enqueue(() => finalizeSeg(seg));
+      enqueue(() => finalizeSeg(seg)); // 排在已收到的資料後面，寫完才收尾
       resolve();
     };
     mr.addEventListener('stop', finish);
-    setTimeout(finish, 2500);
+    // 舊 iPhone 收尾可能很慢：先讓下一段開始，這段等錄影器真的停下來再收尾
+    waitT = setTimeout(() => {
+      seg.status = 'closing';
+      saveSegMeta(seg);
+      renderSoon();
+      // 一直停不下來就放棄：不再收它的資料，免得這段收尾後還一直變大
+      giveT = setTimeout(() => { mr.ondataavailable = null; seg.incomplete = true; finish(); }, STOP_GIVEUP - STOP_WAIT);
+      resolve();
+    }, STOP_WAIT);
     try { if (mr.state !== 'inactive') mr.stop(); else finish(); } catch (e) { finish(); }
   });
 }
 async function finalizeSeg(seg) {
+  if (seg.deleted) return;
   seg.status = 'done';
   if (seg.bytes < 4096) { await removeSeg(seg); return; } // 只有檔頭，沒有畫面
   await DB.putSeg(seg);
@@ -824,9 +900,9 @@ async function rotateSegment() {
 }
 
 function startRecording() {
-  if (R.want) return;
+  if (R.want || !ready) return; // 舊片段還沒讀完前不能錄，否則新片段會被清單蓋掉
   if (!envOK) { showErr(envMsgs.join('\n')); return; }
-  R.want = true; R.fails = 0;
+  R.want = true; R.fails = 0; R.slowStop = false; R.hold = false; R.restarts = [];
   lsSet('dashcam.hb', String(Date.now()));
   if (S.gsensor) enableMotion(); // 要在使用者點擊當下要求權限
   if (S.gps) startGps();
@@ -858,7 +934,7 @@ function stopRecording(silent) {
   stopGps(); releaseWake();
   return pipe(async () => { await stopRecorder(); stopDraw(); stopCamera(); }).then(() => R.q).then(() => {
     setIdle(true); updateHud(); renderIdleStats();
-    if (!silent) toast('已停止，影片都存好了');
+    if (!silent) toast(segs.some(s => s.status === 'closing') ? '已停止，最後一段還在收尾' : '已停止，影片都存好了');
   });
 }
 
@@ -866,6 +942,7 @@ function restartPipeline(reason) {
   if (R.restartPending) return;
   R.restartPending = true;
   R.lastAttempt = Date.now();
+  R.healthySince = 0;
   return pipe(async () => {
     R.restartPending = false;
     if (!R.want) return;
@@ -889,19 +966,96 @@ function restartPipeline(reason) {
   });
 }
 
-let unhealthy = 0;
+// 相機出問題時重啟；2 分鐘內超過 3 次就暫停，之後每 2 分鐘自動重試一次（開車時沒人能點畫面）
+function recentRestarts(now) { R.restarts = R.restarts.filter(t => now - t < 120000); return R.restarts.length; }
+function lastRestart() { return R.restarts[R.restarts.length - 1] || 0; }
+function holdRetry(now, reason) {
+  if (now - lastRestart() < 120000) return;
+  R.restarts = [now]; // 更早的都超過 2 分鐘了
+  restartPipeline(reason + '（自動重試）');
+}
+function healthRestart(reason) {
+  if (R.restartPending) return;
+  const now = Date.now();
+  if (R.hold) return holdRetry(now, reason);
+  if (recentRestarts(now) >= 3) {
+    R.hold = true;
+    if (now - R.holdToast > 120000) { // 相機時好時壞時不要一直跳提示
+      R.holdToast = now;
+      toast('相機一直中斷，改成每 2 分鐘自動重試一次。點一下畫面可以馬上重試', 'warn');
+    }
+    updateHud();
+    return;
+  }
+  R.restarts.push(now);
+  restartPipeline(reason);
+}
+
+// 畫面凍結只提示不重啟：停車、夜間或鏡頭被擋住時畫面本來就可能不動
+const probe = document.createElement('canvas');
+probe.width = probe.height = 8;
+const pctx = probe.getContext('2d', { willReadFrequently: true });
+const frozen = { prev: null, changed: 0, warned: false };
+function resetFrozen() { frozen.prev = null; frozen.changed = Date.now(); frozen.warned = false; }
+function checkFrozen(now) {
+  if (!CAM.videoWidth) return;
+  let d;
+  try { pctx.drawImage(CAM, 0, 0, 8, 8); d = pctx.getImageData(0, 0, 8, 8).data; } catch (e) { return; }
+  let sum = 0, same = !!frozen.prev;
+  for (let k = 0; k < d.length; k++) {
+    if (k % 4 === 3) continue;
+    sum += d[k];
+    if (same && d[k] !== frozen.prev[k]) same = false;
+  }
+  frozen.prev = d;
+  if (!same || sum / 192 < 12) { // 有變化，或幾乎全黑
+    frozen.changed = now;
+    if (frozen.warned) { frozen.warned = false; updateHud(); }
+  } else if (now - frozen.changed >= 10000 && !frozen.warned) {
+    frozen.warned = true;
+    toast('畫面好像停住了。如果一直這樣，請停止再重新錄影', 'warn');
+    updateHud();
+  }
+}
+
+// Safari 不按秒交資料時，主動要；要不到就縮短片段，減少被殺掉時遺失的量
+function pollData(now) {
+  const idle = now - R.lastData;
+  if (R.mr.state === 'recording' && idle > 5000 && now - R.lastReq >= 2000) {
+    R.lastReq = now;
+    try { R.mr.requestData(); } catch (e) {}
+  }
+  if (!R.timesliceOK && !R.shortSeg && idle > 15000) {
+    R.shortSeg = true;
+    toast('這支手機沒有即時交出影片資料，改成每段 1 分鐘', 'warn');
+    scheduleRotate();
+    updateHud();
+  }
+}
+
 function watchdog() {
   if (!R.want || document.hidden || pipeBusy) return;
   const now = Date.now();
   if (!R.mr) {
-    if (now - R.lastAttempt > Math.min(30000, 2000 * Math.pow(2, R.fails))) restartPipeline('恢復錄影');
+    R.healthySince = 0;
+    if (R.hold) holdRetry(now, '恢復錄影');
+    else if (now - R.lastAttempt > Math.min(30000, 2000 * Math.pow(2, R.fails))) restartPipeline('恢復錄影');
     return;
   }
-  const bad = !camAlive() || R.mr.state === 'inactive' ||
-    (R.timesliceOK && now - R.lastData > 15000) ||
-    (CAM.requestVideoFrameCallback && lastFrame && now - lastFrame > 4000);
-  unhealthy = bad ? unhealthy + 1 : 0;
-  if (unhealthy >= 2) { unhealthy = 0; restartPipeline('畫面中斷'); }
+  checkFrozen(now);
+  pollData(now);
+  // 以相機軌的實際狀態為準，事件漏掉也抓得到
+  if (R.cam && R.cam.getVideoTracks().some(t => t.muted)) { if (!R.mutedAt) R.mutedAt = now; }
+  else R.mutedAt = 0;
+  const muted = R.mutedAt && now - R.mutedAt > 3000;
+  const bad = muted || !camAlive() || R.mr.state === 'inactive' || (R.timesliceOK && now - R.lastData > 15000);
+  R.healthySince = (bad || R.mutedAt) ? 0 : (R.healthySince || now); // 暫停未滿 3 秒也不算正常
+  if (!bad) {
+    R.unhealthy = 0;
+    if (R.hold && R.healthySince && now - R.healthySince >= 10000) { R.hold = false; updateHud(); } // 連續正常 10 秒才算恢復
+    return;
+  }
+  if (muted || ++R.unhealthy >= 2) { R.unhealthy = 0; healthRestart(muted ? '相機暫停' : '畫面中斷'); }
 }
 
 function camErrorText(e) {
@@ -928,7 +1082,7 @@ function grabThumb(seg) {
     c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
     seg.thumb = c.toDataURL('image/jpeg', 0.6);
   } catch (e) { return; }
-  enqueue(() => DB.putSeg(seg));
+  saveSegMeta(seg);
   renderSoon();
 }
 
@@ -938,8 +1092,8 @@ function triggerEvent(reason, manual) {
   if (!manual && now - lastEvent < 10000) return;
   lastEvent = now;
   if (R.want) lockUntil = now + 30000;
-  const hit = segs.filter(s => !s.locked && (s.status === 'rec' || s.end >= now - 30000));
-  hit.forEach(s => { s.locked = true; s.lockReason = reason; enqueue(() => DB.putSeg(s)); });
+  const hit = segs.filter(s => !s.locked && !s.deleting && (s.status !== 'done' || s.end >= now - 30000));
+  hit.forEach(s => { s.locked = true; s.lockReason = reason; saveSegMeta(s); });
   const btn = $('#b-lock');
   btn.classList.add('flash');
   setTimeout(() => btn.classList.remove('flash'), 1200);
@@ -1047,13 +1201,16 @@ function updateHud() {
   const now = Date.now();
   $('#clock').textContent = fmtTime(now);
   const pill = $('#pill'), pt = $('#pill-t'), sub = $('#sub');
-  if (R.want && R.seg) { pill.className = 'pill rec'; pt.textContent = 'REC ' + fmtDur(now - R.seg.start); }
+  if (R.want && R.hold) { pill.className = 'pill wait'; pt.textContent = '相機中斷'; }
+  else if (R.want && R.seg) { pill.className = 'pill rec'; pt.textContent = 'REC ' + fmtDur(now - R.seg.start); }
   else if (R.want) { pill.className = 'pill wait'; pt.textContent = R.fails ? '相機重試中…' : '啟動中…'; }
   else { pill.className = 'pill'; pt.textContent = '待機'; }
   sub.textContent = '';
   if (R.want) {
     sub.append(QUALITY[S.quality].label + ' · 每段 ' + segLabel() + (R.seg && R.seg.locked ? ' · 已鎖定' : ''));
     if (!wake && !DEMO) { sub.append(' · '); sub.append(el('span', 'warn', '請確認自動鎖定為永不')); }
+    if (R.hold) { sub.append(' · '); sub.append(el('span', 'warn', '相機一直中斷，每 2 分鐘自動重試，點一下畫面可馬上重試')); }
+    else if (frozen.warned) { sub.append(' · '); sub.append(el('span', 'warn', '畫面好像停住了')); }
   }
   const sp = $('#speed');
   sp.hidden = !S.gps;
@@ -1066,7 +1223,7 @@ function updateHud() {
   rb.classList.toggle('on', R.want);
   rb.setAttribute('aria-label', R.want ? '停止錄影' : '開始錄影');
   if (!$('#dim').hidden) {
-    $('#dim-t').textContent = (R.want && R.seg ? '● REC ' + fmtDur(now - R.seg.start) : R.want ? '● 啟動中' : '○ 待機') + '  ' + fmtTime(now) + '  點一下回到畫面';
+    $('#dim-t').textContent = (R.want && R.hold ? '● 相機中斷' : R.want && R.seg ? '● REC ' + fmtDur(now - R.seg.start) : R.want ? '● 啟動中' : '○ 待機') + '  ' + fmtTime(now) + '  點一下回到畫面';
   }
 }
 
@@ -1135,6 +1292,9 @@ function clipRow(s) {
   meta.append(el('div', 'm num', parts.join(' · ')));
   const bds = el('div', 'bds');
   if (s.status === 'rec') bds.append(el('span', 'bd rec', '錄影中'));
+  if (s.status === 'closing') bds.append(el('span', 'bd', '收尾未完成'));
+  if (s.lost) bds.append(el('span', 'bd warn', '有缺損'));
+  if (s.incomplete) bds.append(el('span', 'bd warn', '結尾不完整'));
   if (s.locked) bds.append(el('span', 'bd lock', s.lockReason || '已鎖定'));
   if (s.recovered) bds.append(el('span', 'bd', '中斷後救回'));
   if (bds.childNodes.length) meta.append(bds);
@@ -1147,9 +1307,10 @@ function clipRow(s) {
 }
 function segById(id) { id = Number(id); return segs.find(s => s.id === id); }
 function toggleLock(s) {
+  if (s.deleting || s.deleted) { toast('這段正在被覆蓋，來不及鎖定'); return; }
   s.locked = !s.locked;
   s.lockReason = s.locked ? '手動鎖定' : '';
-  enqueue(() => DB.putSeg(s));
+  saveSegMeta(s);
   renderSoon(); updateHud();
 }
 
@@ -1164,6 +1325,8 @@ function renderPlayerInfo() {
   const parts = [fmtDur(s.end - s.start), fmtBytes(s.bytes), (s.w && s.h ? s.w + '×' + s.h : '')];
   if (s.maxKmh) parts.push('最高 ' + s.maxKmh + ' km/h');
   if (s.locked) parts.push(s.lockReason || '已鎖定');
+  if (s.lost) parts.push('有缺損');
+  if (s.incomplete) parts.push('結尾不完整');
   $('#p-info').textContent = parts.filter(Boolean).join(' · ');
   const lb = $('#p-lock');
   lb.classList.toggle('on', !!s.locked);
@@ -1174,7 +1337,7 @@ function renderPlayerInfo() {
   if (pt) map.href = 'https://maps.google.com/?q=' + pt[1] + ',' + pt[2];
 }
 async function openPlayer(s) {
-  if (s.status === 'rec') { toast('這段還在錄，錄完才能播放'); return; }
+  if (s.status !== 'done') { toast(s.status === 'rec' ? '這段還在錄，錄完才能播放' : '這段還在收尾，等一下再播放'); return; }
   closePlayer();
   P.seg = s;
   $('#player').hidden = false;
@@ -1242,7 +1405,7 @@ async function deleteCurrent() {
 let wipeArmed = 0;
 function onWipe() {
   const b = $('#b-wipe'), lbl = b.querySelector('.lbl');
-  const victims = segs.filter(s => !s.locked && s.status !== 'rec');
+  const victims = segs.filter(s => !s.locked && s.status === 'done');
   if (!victims.length) { toast('沒有可刪除的片段'); return; }
   if (!b.classList.contains('armed')) {
     b.classList.add('armed');
@@ -1252,7 +1415,7 @@ function onWipe() {
     return;
   }
   b.classList.remove('armed'); lbl.textContent = '刪除';
-  enqueue(async () => { for (const s of victims) await removeSeg(s); }).then(() => {
+  enqueue(async () => { for (const s of victims) if (!s.locked && s.status === 'done') await removeSeg(s); }).then(() => {
     toast('已刪除 ' + victims.length + ' 段'); updateHud(); renderSettingsInfo();
   });
 }
@@ -1337,12 +1500,13 @@ async function refreshEstimate() {
 // 啟動時把上次沒正常結束的片段救回來
 async function recover() {
   for (const s of segs.slice()) {
-    if (s.status !== 'rec') continue;
+    if (s.status !== 'rec' && s.status !== 'closing') continue;
     const rows = await DB.chunks(s.id);
     const bytes = rows.reduce((a, r) => a + (r.blob.size || r.blob.byteLength || 0), 0);
     if (bytes < 4096) { await DB.delSeg(s.id); segs = segs.filter(x => x !== s); continue; } // 只有檔頭，沒有畫面
     s.bytes = bytes;
-    s.n = rows.length;
+    s.n = rows[rows.length - 1].i + 1;
+    s.lost = Math.max(s.lost || 0, s.n - rows.length); // 中間有缺塊
     s.end = Math.max(s.end || 0, rows[rows.length - 1].t || 0);
     s.status = 'done';
     s.recovered = true;
@@ -1396,6 +1560,7 @@ function bindUi() {
   });
   // Safari 的常亮與動作感測需要使用者點擊過，任何一次點擊都補要求一次
   document.addEventListener('pointerdown', () => {
+    if (R.want && R.hold) { R.hold = false; R.restarts = []; restartPipeline('手動重試'); updateHud(); }
     if (R.want && !wake) keepAwake();
     if (R.want && S.gsensor && !motionOn) enableMotion();
   }, true);
@@ -1403,8 +1568,7 @@ function bindUi() {
     if (document.hidden) {
       if (R.want) pipe(() => stopRecorder()); // 先把這段收尾，iOS 在背景會停掉相機
     } else {
-      lastFrame = Date.now();
-      if (R.want) { keepAwake(); restartPipeline('回到前景'); }
+      if (R.want) { R.hold = false; R.restarts = []; keepAwake(); restartPipeline('回到前景'); }
     }
   });
   window.addEventListener('pagehide', () => { if (R.mr) try { R.mr.stop(); } catch (e) {} });
@@ -1420,6 +1584,8 @@ async function boot() {
   try {
     segs = await DB.allSegs();
     await recover();
+    ready = true;
+    $('#b-rec').disabled = false;
   } catch (e) {
     envOK = false;
     envMsgs.push('無法使用瀏覽器的儲存空間（' + (e && e.message || e) + '）。如果在私密瀏覽模式，請改用一般模式。');
